@@ -179,6 +179,30 @@ export async function uploadBase64ImageToSupabaseStorage(params: {
   };
 }
 
+function resolveSupabaseSignedUrl(supabaseUrl: string, signedUrl: string): string {
+  if (signedUrl.startsWith('http://') || signedUrl.startsWith('https://')) {
+    return signedUrl;
+  }
+
+  // Supabase usually returns a relative signedURL like:
+  // /object/sign/<bucket>/<path>?token=...
+  // Browser image tags need:
+  // https://project.supabase.co/storage/v1/object/sign/<bucket>/<path>?token=...
+  if (signedUrl.startsWith('/storage/v1/')) {
+    return `${supabaseUrl}${signedUrl}`;
+  }
+
+  if (signedUrl.startsWith('/object/')) {
+    return `${supabaseUrl}/storage/v1${signedUrl}`;
+  }
+
+  if (signedUrl.startsWith('object/')) {
+    return `${supabaseUrl}/storage/v1/${signedUrl}`;
+  }
+
+  return `${supabaseUrl}/${signedUrl.replace(/^\/+/, '')}`;
+}
+
 export async function createSignedImageUrl(storagePath: string, expiresIn = 60 * 60): Promise<string> {
   const config = getSupabaseConfig();
   if (!config) {
@@ -209,7 +233,7 @@ export async function createSignedImageUrl(storagePath: string, expiresIn = 60 *
     throw new Error('Supabase did not return a signed URL.');
   }
 
-  return signedUrl.startsWith('http') ? signedUrl : `${config.url}${signedUrl}`;
+  return resolveSupabaseSignedUrl(config.url, signedUrl);
 }
 
 export async function downloadImageFromSupabaseStorage(storagePath: string): Promise<Buffer> {
