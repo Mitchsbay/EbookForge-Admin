@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { normaliseChapterWordCounts } from '@/lib/word-count';
 import {
   Eye,
   ChevronLeft,
@@ -66,11 +67,16 @@ export default function PreviewPage() {
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
-        setProject(parsed);
+        const parsedWithCounts = {
+          ...parsed,
+          chapters: normaliseChapterWordCounts(parsed.chapters),
+        };
+        setProject(parsedWithCounts);
+        localStorage.setItem('ebookforge_project', JSON.stringify(parsedWithCounts));
 
         // Select first chapter if available
-        if (parsed.chapters?.length > 0) {
-          setSelectedChapterId(parsed.chapters[0].id);
+        if (parsedWithCounts.chapters?.length > 0) {
+          setSelectedChapterId(parsedWithCounts.chapters[0].id);
         }
       } catch (err) {
         console.error('Failed to load project:', err);

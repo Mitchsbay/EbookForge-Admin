@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { normaliseChapterWordCounts } from '@/lib/word-count';
 import {
   Download,
   FileText,
@@ -57,7 +58,12 @@ export default function ExportPage() {
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
-        setProject(parsed);
+        const parsedWithCounts = {
+          ...parsed,
+          chapters: normaliseChapterWordCounts(parsed.chapters),
+        };
+        setProject(parsedWithCounts);
+        localStorage.setItem('ebookforge_project', JSON.stringify(parsedWithCounts));
       } catch (err) {
         setError('Failed to load project');
       }

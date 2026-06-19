@@ -100,6 +100,16 @@ export default function SettingsPage() {
     }));
   };
 
+  const handleNumberRewriteChange = (key: string, rawValue: string) => {
+    const trimmed = rawValue.trim();
+    const value = trimmed === '' ? undefined : Number(trimmed);
+
+    setRewriteSettings((prev: any) => ({
+      ...prev,
+      [key]: Number.isFinite(value) ? value : undefined,
+    }));
+  };
+
   const toggleContentAddition = (value: string, checked: boolean) => {
     setRewriteSettings((prev: any) => ({
       ...prev,
@@ -280,15 +290,51 @@ export default function SettingsPage() {
                 />
               </div>
 
-              {rewriteSettings.targetLength === 'custom' && (
+              {(rewriteSettings.targetLength === 'custom' || rewriteSettings.chapterLength === 'custom') && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 rounded-xl border border-zinc-800 bg-zinc-950/50 p-4">
+                  {rewriteSettings.targetLength === 'custom' && (
+                    <div>
+                      <label className="block text-sm text-zinc-400 mb-2">Custom Total Book Word Count</label>
+                      <input
+                        type="number"
+                        min={500}
+                        step={100}
+                        value={rewriteSettings.customWordCount ?? ''}
+                        onChange={(e) => handleNumberRewriteChange('customWordCount', e.target.value)}
+                        className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-zinc-100"
+                        placeholder="e.g., 30000"
+                      />
+                      <p className="mt-2 text-xs text-zinc-500">Used as the overall ebook target. The app divides this across chapters unless a chapter target is also set.</p>
+                    </div>
+                  )}
+
+                  {rewriteSettings.chapterLength === 'custom' && (
+                    <div>
+                      <label className="block text-sm text-zinc-400 mb-2">Custom Words Per Chapter</label>
+                      <input
+                        type="number"
+                        min={200}
+                        step={50}
+                        value={rewriteSettings.customWordsPerChapter ?? ''}
+                        onChange={(e) => handleNumberRewriteChange('customWordsPerChapter', e.target.value)}
+                        className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-zinc-100"
+                        placeholder="e.g., 1200"
+                      />
+                      <p className="mt-2 text-xs text-zinc-500">This is the clearest control for chapter rewrite length.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {rewriteSettings.audience === 'custom' && (
                 <div>
-                  <label className="block text-sm text-zinc-400 mb-2">Custom Word Count</label>
+                  <label className="block text-sm text-zinc-400 mb-2">Custom Audience</label>
                   <input
-                    type="number"
-                    value={rewriteSettings.customWordCount || ''}
-                    onChange={(e) => handleRewriteChange('customWordCount', parseInt(e.target.value))}
-                    className="w-full sm:w-48 bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-zinc-100"
-                    placeholder="e.g., 30000"
+                    type="text"
+                    value={rewriteSettings.customAudience || ''}
+                    onChange={(e) => handleRewriteChange('customAudience', e.target.value)}
+                    className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-3 text-zinc-100"
+                    placeholder="e.g., first-time dog owners in Australia"
                   />
                 </div>
               )}

@@ -3,6 +3,7 @@ import { rewriteChapterWithAI } from '@/lib/openai-utils';
 import { RewriteSettings, EbookOutline, Chapter } from '@/lib/types';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
+import { countWordsInContentBlocks } from '@/lib/word-count';
 
 const rewriteRequestSchema = z.object({
   chapter: z.object({
@@ -21,6 +22,9 @@ const rewriteRequestSchema = z.object({
     bulletStyle: z.string(),
     rewriteDepth: z.string(),
     contentAdditions: z.array(z.string()),
+    customWordCount: z.number().optional().nullable(),
+    customWordsPerChapter: z.number().optional().nullable(),
+    customAudience: z.string().optional().nullable(),
   }),
   outline: z.object({
     chapters: z.array(z.any()),
@@ -58,18 +62,25 @@ export async function POST(request: NextRequest) {
       bookTitle
     );
 
-    // Add IDs to content blocks if missing
+    // Add IDs to content blocks/items if missing
     const contentWithIds = result.content.map((block: any) => ({
       ...block,
       id: block.id || uuidv4(),
+      items: Array.isArray(block.items)
+        ? block.items.map((item: any) => ({ ...item, id: item.id || uuidv4() }))
+        : block.items,
     }));
+
+    // Never trust the AI-reported word count. The model can copy the example
+    // value from the prompt, so calculate the real displayed/exported count here.
+    const actualWordCount = countWordsInContentBlocks(contentWithIds);
 
     return NextResponse.json({
       success: true,
       chapter: {
         ...chapter,
         content: contentWithIds,
-        wordCount: result.wordCount,
+        wordCount: actualWordCount,
         status: 'rewritten',
         lastEdited: new Date().toISOString(),
       },

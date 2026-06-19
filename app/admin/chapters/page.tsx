@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { countWordsInContentBlocks, countWordsInText, normaliseChapterWordCounts } from '@/lib/word-count';
 import {
   FileText,
   Play,
@@ -84,11 +85,18 @@ export default function ChaptersPage() {
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
-        setProject(parsed);
+        // Normalize stored word counts so old AI-estimated counts are corrected on load.
+        const parsedWithCounts = {
+          ...parsed,
+          chapters: normaliseChapterWordCounts(parsed.chapters),
+        };
+        setProject(parsedWithCounts);
 
         // Initialize chapters if not exists
-        if (parsed.chapters && parsed.chapters.length > 0) {
-          setChapters(parsed.chapters);
+        if (parsedWithCounts.chapters && parsedWithCounts.chapters.length > 0) {
+          setChapters(parsedWithCounts.chapters);
+          setSelectedChapterId((current) => current || parsedWithCounts.chapters[0].id);
+          localStorage.setItem('ebookforge_project', JSON.stringify(parsedWithCounts));
         } else if (parsed.outline?.chapters?.length > 0) {
           // Create chapters from outline
           const initialChapters: Chapter[] = parsed.outline.chapters.map((outlineCh: any, index: number) => {
@@ -107,6 +115,10 @@ export default function ChaptersPage() {
             };
           });
           setChapters(initialChapters);
+          setSelectedChapterId((current) => current || initialChapters[0]?.id || null);
+          const projectWithInitialChapters = { ...parsedWithCounts, chapters: initialChapters };
+          setProject(projectWithInitialChapters);
+          localStorage.setItem('ebookforge_project', JSON.stringify(projectWithInitialChapters));
         }
       } catch (err) {
         console.error('Failed to load project:', err);
@@ -121,15 +133,18 @@ export default function ChaptersPage() {
     if (!project) return;
 
     setSaving(true);
+    const chaptersWithCounts = normaliseChapterWordCounts(chapters);
+
     const updatedProject = {
       ...project,
-      chapters,
+      chapters: chaptersWithCounts,
       updatedAt: new Date().toISOString(),
       status: 'rewriting',
     };
 
     localStorage.setItem('ebookforge_project', JSON.stringify(updatedProject));
     setProject(updatedProject);
+    setChapters(chaptersWithCounts);
     setHasUnsavedChanges(false);
     setSaving(false);
   }, [project, chapters]);
@@ -173,19 +188,30 @@ export default function ChaptersPage() {
         throw new Error(data.error || 'Failed to rewrite chapter');
       }
 
-      setChapters(prev =>
-        prev.map(c =>
+      const nextChapters = normaliseChapterWordCounts(
+        chapters.map(c =>
           c.id === chapterId
             ? {
                 ...c,
                 content: data.chapter.content,
-                wordCount: data.chapter.wordCount,
-                status: 'rewritten',
+                wordCount: countWordsInContentBlocks(data.chapter.content),
+                status: 'rewritten' as const,
                 lastEdited: new Date().toISOString(),
               }
             : c
         )
       );
+
+      const updatedProject = {
+        ...project,
+        chapters: nextChapters,
+        updatedAt: new Date().toISOString(),
+        status: 'rewriting',
+      };
+
+      localStorage.setItem('ebookforge_project', JSON.stringify(updatedProject));
+      setChapters(nextChapters);
+      setProject(updatedProject);
     } catch (err: any) {
       setError(err.message);
       setChapters(prev =>
@@ -228,7 +254,7 @@ export default function ChaptersPage() {
           ? {
               ...c,
               content: [{ id: `cnt_${Date.now()}`, type: 'paragraph', content }],
-              wordCount: content.split(/\s+/).filter(Boolean).length,
+              wordCount: countWordsInText(content),
               status: 'edited',
               lastEdited: new Date().toISOString(),
             }

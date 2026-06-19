@@ -8,6 +8,7 @@ import {
   BulletStyle,
   Audience,
 } from './types';
+import { countWordsInContentBlocks } from './word-count';
 
 interface OpenAIGenerateOutlineResult {
   chapters: OutlineChapter[];
@@ -139,6 +140,51 @@ function getContentAdditionsPrompt(additions: ContentAddition[]): string {
   return prompts.join('. Additionally, ');
 }
 
+function getChapterTargetWords(settings: RewriteSettings, outline: EbookOutline): number | null {
+  if (settings.chapterLength === 'custom' && typeof settings.customWordsPerChapter === 'number' && settings.customWordsPerChapter > 0) {
+    return Math.round(settings.customWordsPerChapter);
+  }
+
+  if (settings.targetLength === 'custom' && typeof settings.customWordCount === 'number' && settings.customWordCount > 0) {
+    const chapterCount = Math.max(1, outline?.chapters?.length || 1);
+    return Math.max(200, Math.round(settings.customWordCount / chapterCount));
+  }
+
+  return null;
+}
+
+function buildLengthInstructions(settings: RewriteSettings, outline: EbookOutline): string {
+  const explicitChapterTarget = getChapterTargetWords(settings, outline);
+
+  if (explicitChapterTarget) {
+    return `Target approximately ${explicitChapterTarget} words for this chapter. This is a target, not a guarantee, but make a genuine effort to reach it while avoiding filler.`;
+  }
+
+  switch (settings.chapterLength) {
+    case 'short':
+      return 'Keep this chapter brief, around 1,500 words where the source material supports it.';
+    case 'long':
+      return 'Write a detailed chapter, around 4,000 words where the source material supports it.';
+    default:
+      break;
+  }
+
+  switch (settings.targetLength) {
+    case 'shorten-25':
+      return 'Shorten this chapter by approximately 25% while preserving all key information.';
+    case 'expand-25':
+      return 'Expand this chapter by approximately 25% with useful detail and examples.';
+    case 'expand-50':
+      return 'Expand this chapter by approximately 50% with thorough explanations and examples.';
+    case 'double':
+      return 'Aim to roughly double this chapter with comprehensive coverage, examples, and detailed explanations.';
+    case 'full-professional':
+      return 'Expand this into a full professional ebook chapter with comprehensive coverage, while avoiding filler.';
+    default:
+      return 'Maintain a similar length while improving quality.';
+  }
+}
+
 function buildRewritePrompt(
   chapterTitle: string,
   originalContent: string,
@@ -150,44 +196,11 @@ function buildRewritePrompt(
   const tone = getTonePrompt(settings.writingTone);
   const paragraph = getParagraphPrompt(settings.paragraphStyle);
   const bullet = getBulletPrompt(settings.bulletStyle);
-  const audience = getAudiencePrompt(settings.audience);
+  const audience = settings.audience === 'custom' && settings.customAudience
+    ? `Write for this specific audience: ${settings.customAudience}.`
+    : getAudiencePrompt(settings.audience);
 
-  let lengthInstruction = '';
-  switch (settings.targetLength) {
-    case 'shorten-25':
-      lengthInstruction = 'Shorten the content by approximately 25% while preserving all key information.';
-      break;
-    case 'expand-25':
-      lengthInstruction = 'Expand the content by approximately 25% with additional detail and examples.';
-      break;
-    case 'expand-50':
-      lengthInstruction = 'Expand the content by approximately 50% with thorough explanations and examples.';
-      break;
-    case 'double':
-      lengthInstruction = 'Double the length with comprehensive coverage, examples, and detailed explanations.';
-      break;
-    case 'full-professional':
-      lengthInstruction = 'Expand into a full professional ebook chapter with comprehensive coverage.';
-      break;
-    case 'custom':
-      lengthInstruction = `Target approximately ${settings.customWordCount || 3000} words for the full book.`;
-      break;
-    default:
-      lengthInstruction = 'Maintain similar length while improving quality.';
-  }
-
-  const chapterLengthInstruction = (() => {
-    switch (settings.chapterLength) {
-      case 'short':
-        return 'Keep chapters brief (~1500 words)';
-      case 'long':
-        return 'Write detailed chapters (~4000 words)';
-      case 'custom':
-        return `Target approximately ${settings.customWordsPerChapter || 2500} words per chapter`;
-      default:
-        return 'Write medium-length chapters (~2500 words)';
-    }
-  })();
+  const lengthInstruction = buildLengthInstructions(settings, outline);
 
   const depthInstruction = (() => {
     switch (settings.rewriteDepth) {
@@ -226,7 +239,6 @@ ${audience}
 
 ### Length Guidelines:
 ${lengthInstruction}
-${chapterLengthInstruction}
 
 ### Rewrite Depth:
 ${depthInstruction}
@@ -246,6 +258,7 @@ ${originalContent}
 6. Keep facts grounded in the source material
 7. Format the output as clean, well-structured content
 8. Return the result as JSON with chapter content blocks
+9. Do not estimate or invent a wordCount value. The app calculates the real word count after generation.
 
 ## Output Format:
 
@@ -281,7 +294,6 @@ Return a JSON object with this structure:
       "style": "tip"
     }
   ],
-  "wordCount": 2500,
   "suggestions": ["Any suggestions for improvement"]
 }
 
@@ -497,7 +509,10 @@ export async function rewriteChapterWithAI(
       throw new Error('No JSON found in response');
     }
     const result = JSON.parse(jsonMatch[0]);
-    return result;
+    return {
+      ...result,
+      wordCount: countWordsInContentBlocks(result.content),
+    };
   } catch (e) {
     console.error('Failed to parse rewrite response:', e);
     throw new Error('Failed to parse AI rewrite response');
