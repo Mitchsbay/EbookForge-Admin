@@ -504,6 +504,69 @@ export async function rewriteChapterWithAI(
   }
 }
 
+const DEFAULT_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1';
+
+function isGptImageModel(model: string): boolean {
+  return model.startsWith('gpt-image-');
+}
+
+function buildImageGenerationPayload(prompt: string): Record<string, unknown> {
+  const model = DEFAULT_IMAGE_MODEL;
+  const payload: Record<string, unknown> = {
+    model,
+    prompt,
+    n: 1,
+    size: '1024x1024',
+  };
+
+  if (isGptImageModel(model)) {
+    // GPT image models always return base64 image data and do not support
+    // response_format. Supplying response_format causes a 400/500 error such
+    // as: Unknown parameter: 'response_format'.
+    payload.output_format = 'png';
+
+    const quality = process.env.OPENAI_IMAGE_QUALITY;
+    if (quality && ['low', 'medium', 'high', 'auto'].includes(quality)) {
+      payload.quality = quality;
+    }
+  } else {
+    // DALL-E 2/3 are the models that support response_format.
+    payload.response_format = 'b64_json';
+
+    if (model === 'dall-e-3') {
+      payload.quality = 'standard';
+    }
+  }
+
+  return payload;
+}
+
+async function readOpenAIError(response: Response): Promise<string> {
+  const bodyText = await response.text().catch(() => '');
+
+  if (!bodyText) {
+    return `OpenAI Image API error: ${response.status}`;
+  }
+
+  try {
+    const errorBody = JSON.parse(bodyText);
+    return errorBody.error?.message || bodyText;
+  } catch {
+    return bodyText;
+  }
+}
+
+async function imageUrlToBase64(url: string): Promise<string> {
+  const imageResponse = await fetch(url);
+
+  if (!imageResponse.ok) {
+    throw new Error(`Failed to download generated image: ${imageResponse.status}`);
+  }
+
+  const arrayBuffer = await imageResponse.arrayBuffer();
+  return Buffer.from(arrayBuffer).toString('base64');
+}
+
 export async function generateImageUrl(prompt: string, style: string): Promise<string> {
   const apiKey = getOpenAIKey();
 
@@ -517,6 +580,7 @@ export async function generateImageUrl(prompt: string, style: string): Promise<s
   };
 
   const enhancedPrompt = prompt + (styleEnhancements[style] || '');
+  const payload = buildImageGenerationPayload(enhancedPrompt);
 
   const response = await fetch('https://api.openai.com/v1/images/generations', {
     method: 'POST',
@@ -524,23 +588,25 @@ export async function generateImageUrl(prompt: string, style: string): Promise<s
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      model: 'dall-e-3',
-      prompt: enhancedPrompt,
-      n: 1,
-      size: '1024x1024',
-      quality: 'standard',
-      response_format: 'b64_json',
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.error?.message || `OpenAI Image API error: ${response.status}`);
+    throw new Error(await readOpenAIError(response));
   }
 
   const data = await response.json();
-  return data.data?.[0]?.b64_json || '';
+  const image = data.data?.[0];
+
+  if (image?.b64_json) {
+    return image.b64_json;
+  }
+
+  if (image?.url) {
+    return imageUrlToBase64(image.url);
+  }
+
+  throw new Error('OpenAI Image API did not return image data.');
 }
 
 export async function generateImageSuggestions(

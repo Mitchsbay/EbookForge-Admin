@@ -13,7 +13,7 @@ A private, single-admin web application for uploading Word documents, rewriting 
 - **AI Outline Generation**: GPT-4o analyzes content and creates professional chapter structures
 - **Comprehensive Rewrite Settings**: Book type, tone, audience, depth, content additions
 - **Chapter-by-Chapter Rewriting**: Process content one chapter at a time
-- **AI Image Generation**: DALL-E 3 integration for chapter illustrations
+- **AI Image Generation**: OpenAI Image API integration for chapter illustrations
 - **KDP-Ready Exports**: DOCX, PDF (hardcover layout), EPUB 3.0 packages
 - **Sample Mode**: Test the full workflow without uploading files
 - **Project Persistence**: Save/load project JSON for resuming work
@@ -26,6 +26,12 @@ A private, single-admin web application for uploading Word documents, rewriting 
 # OpenAI API (required for AI features)
 OPENAI_API_KEY=sk-your-openai-api-key
 
+# Optional image model settings
+# Defaults to gpt-image-1. Use dall-e-3 only if you specifically want DALL-E output.
+OPENAI_IMAGE_MODEL=gpt-image-1
+# Optional for GPT image models: low, medium, high, or auto
+OPENAI_IMAGE_QUALITY=auto
+
 # Admin authentication (required)
 ADMIN_PASSWORD=your_secure_password_here
 SESSION_SECRET=random_32_character_string_minimum
@@ -33,7 +39,9 @@ SESSION_SECRET=random_32_character_string_minimum
 
 - `ADMIN_PASSWORD`: The password required to access the admin panel
 - `SESSION_SECRET`: Random string used to sign JWT tokens (min 32 characters)
-- `OPENAI_API_KEY`: Your OpenAI API key with GPT-4o and DALL-E 3 access
+- `OPENAI_API_KEY`: Your OpenAI API key with GPT-4o and OpenAI Image API access
+- `OPENAI_IMAGE_MODEL` optional: defaults to `gpt-image-1`; you may set `dall-e-3` or `dall-e-2` if needed
+- `OPENAI_IMAGE_QUALITY` optional: for GPT image models, use `low`, `medium`, `high`, or `auto`
 
 ---
 
@@ -109,9 +117,9 @@ The analyzed document is stored in browser localStorage for the entire session.
    - Edited before generation
    - Rejected
 
-3. **DALL-E 3 Generation**: Approved prompts sent to `dall-e-3` model
-   - Standard quality, 1024x1024 pixels
-   - Returns base64 image data
+3. **OpenAI Image Generation**: Approved prompts are sent to the configured image model
+   - Defaults to `gpt-image-1`, 1024x1024 pixels, PNG output
+   - `response_format` is only sent for `dall-e-2`/`dall-e-3`; GPT image models always return base64 data
 
 4. **Gallery Management**: View all generated images, regenerate specific ones
 
@@ -225,6 +233,7 @@ cp .env.example .env.local
 
 # 3. Edit .env.local with your values:
 #    OPENAI_API_KEY=sk-your-key
+#    OPENAI_IMAGE_MODEL=gpt-image-1
 #    ADMIN_PASSWORD=your-password
 #    SESSION_SECRET=random-32-char-string
 
@@ -251,6 +260,7 @@ The dev server will automatically redirect you to login if not authenticated.
 3. **Set Environment Variables**:
    In the Vercel dashboard, add these environment variables:
    - `OPENAI_API_KEY` - Your OpenAI API key
+   - `OPENAI_IMAGE_MODEL` - Optional, defaults to `gpt-image-1`
    - `ADMIN_PASSWORD` - Secure admin password
    - `SESSION_SECRET` - Random 32+ character string
 
