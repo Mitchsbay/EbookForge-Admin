@@ -191,15 +191,30 @@ function getTargetRange(targetWords: number | null): { minimumWords: number; max
 function getMaxTokensForTarget(targetWords: number | null): number {
   const fallbackTarget = targetWords || 2500;
 
-  // Words to tokens is not exact. For JSON content blocks, allow generous headroom
-  // so chapters do not silently stop at short summaries. Keep the default cap
-  // within the common GPT-4o output allowance unless overridden by env.
-  const configuredCap = Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 32000);
-  const safeCap = Number.isFinite(configuredCap) && configuredCap > 0 ? configuredCap : 32000;
+  // GPT-4o chat completions currently reject completion requests above 16,384
+  // output tokens. Keep a small safety margin below that hard limit. Longer
+  // chapters are handled by the expansion/continuation passes below instead of
+  // asking for an impossible single response.
+  const modelCompletionLimit = Number(process.env.OPENAI_MODEL_COMPLETION_TOKEN_LIMIT || 16384);
+  const configuredCap = Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 16000);
+
+  const hardCap = Number.isFinite(modelCompletionLimit) && modelCompletionLimit > 0
+    ? Math.min(16000, Math.floor(modelCompletionLimit))
+    : 16000;
+
+  const safeCap = Number.isFinite(configuredCap) && configuredCap > 0
+    ? Math.min(Math.floor(configuredCap), hardCap)
+    : hardCap;
+
+  // A practical single-call budget. JSON wrapper/content blocks add overhead,
+  // but 3.5 tokens per target word plus buffer is usually enough. If the model
+  // still returns short content, rewriteChapterWithAI appends continuation
+  // blocks until the chapter is closer to the requested range.
+  const estimatedTokens = Math.ceil(fallbackTarget * 3.5) + 2500;
 
   return Math.min(
     safeCap,
-    Math.max(12000, Math.ceil(fallbackTarget * 7) + 5000)
+    Math.max(6000, estimatedTokens)
   );
 }
 
