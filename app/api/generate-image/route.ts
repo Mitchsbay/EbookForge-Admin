@@ -1,48 +1,57 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateImageUrl } from '@/lib/openai-utils';
-import { z } from 'zod';
-
-const imageRequestSchema = z.object({
-  prompt: z.string(),
-  style: z.string().default('soft-editorial'),
-});
+import OpenAI from 'openai';
 
 export async function POST(request: NextRequest) {
   try {
+    // 1. Wrap the entire handler inside a thorough try/catch block.
     const body = await request.json();
-    const parsed = imageRequestSchema.safeParse(body);
+    const { prompt } = body;
 
-    if (!parsed.success) {
+    if (!prompt) {
       return NextResponse.json(
-        { error: 'Invalid request', details: parsed.error.flatten() },
+        { error: 'Prompt is required' },
         { status: 400 }
       );
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json(
-        { error: 'OpenAI API key is not configured.' },
-        { status: 500 }
-      );
+    // 2. Ensure the OpenAI initialization is robust.
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+
+    // 3. Use the exact DALL-E 3 payload structure.
+    const response = await openai.images.generate({
+      model: "dall-e-3",
+      prompt: prompt, // from the request body
+      n: 1,
+      size: "1024x1024",
+      response_format: "b64_json"
+    });
+
+    // 4. Correctly extract the image data safely.
+    const base64Image = response.data?.[0]?.b64_json;
+
+    if (!base64Image) {
+      throw new Error('No image data received from OpenAI');
     }
-
-    const { prompt, style } = parsed.data;
-
-    const base64Data = await generateImageUrl(prompt, style);
 
     return NextResponse.json({
       success: true,
       image: {
-        base64Data,
+        base64Data: base64Image,
         generatedAt: new Date().toISOString(),
         prompt,
-        style,
       },
     });
   } catch (error: any) {
-    console.error('Generate image error:', error);
+    // 5. Log the exact error to the server console and return a clean JSON error response.
+    console.error("OpenAI Image Error Details:", error);
+    
     return NextResponse.json(
-      { error: error.message || 'Failed to generate image' },
+      { 
+        error: error.message || 'Failed to generate image',
+        details: error.response?.data || error.stack 
+      },
       { status: 500 }
     );
   }
