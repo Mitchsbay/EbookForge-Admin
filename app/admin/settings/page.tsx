@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Settings,
@@ -49,6 +49,7 @@ export default function SettingsPage() {
   });
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const hasLoadedProjectRef = useRef(false);
 
   useEffect(() => {
     const stored = localStorage.getItem('ebookforge_project');
@@ -69,8 +70,30 @@ export default function SettingsPage() {
         console.error('Failed to load project:', err);
       }
     }
+    hasLoadedProjectRef.current = true;
     setLoading(false);
   }, []);
+
+
+  useEffect(() => {
+    if (loading || !project || !hasLoadedProjectRef.current) return;
+
+    const autosaveTimer = window.setTimeout(() => {
+      const updatedProject = {
+        ...project,
+        settings: rewriteSettings,
+        formatting: formattingSettings,
+        imageSettings: imageSettings,
+        updatedAt: new Date().toISOString(),
+        status: 'settings',
+      };
+
+      localStorage.setItem('ebookforge_project', JSON.stringify(updatedProject));
+      setProject(updatedProject);
+    }, 250);
+
+    return () => window.clearTimeout(autosaveTimer);
+  }, [rewriteSettings, formattingSettings, imageSettings, loading, project]);
 
   const toggleSection = (section: 'rewrite' | 'formatting' | 'images') => {
     setExpandedSections(prev => ({
@@ -124,8 +147,18 @@ export default function SettingsPage() {
 
     setSaving(true);
 
+    let latestProject = project;
+    try {
+      const stored = localStorage.getItem('ebookforge_project');
+      if (stored) {
+        latestProject = { ...project, ...JSON.parse(stored) };
+      }
+    } catch {
+      latestProject = project;
+    }
+
     const updatedProject = {
-      ...project,
+      ...latestProject,
       settings: rewriteSettings,
       formatting: formattingSettings,
       imageSettings: imageSettings,

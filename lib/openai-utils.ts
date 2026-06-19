@@ -140,35 +140,78 @@ function getContentAdditionsPrompt(additions: ContentAddition[]): string {
   return prompts.join('. Additionally, ');
 }
 
-function getChapterTargetWords(settings: RewriteSettings, outline: EbookOutline): number | null {
-  // Priority 1: Per-chapter custom target
-  if (settings.chapterLength === 'custom' && typeof settings.customWordsPerChapter === 'number' && settings.customWordsPerChapter > 0) {
-    const target = Math.round(settings.customWordsPerChapter);
-    console.debug(`Using custom words per chapter: ${target}`);
-    return target;
+function toPositiveNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value;
   }
 
-  // Priority 2: Total book word count divided by chapters
-  if (settings.targetLength === 'custom' && typeof settings.customWordCount === 'number' && settings.customWordCount > 0) {
-    const chapterCount = Math.max(1, outline?.chapters?.length || 1);
-    const target = Math.max(200, Math.round(settings.customWordCount / chapterCount));
-    console.debug(`Using custom total word count (${settings.customWordCount}) divided by ${chapterCount} chapters: ${target} per chapter`);
-    return target;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
   }
 
-  // No custom target set
-  console.debug('No custom word count target set, using API defaults');
   return null;
+}
+
+export function getChapterTargetWords(settings: RewriteSettings, outline: EbookOutline): number | null {
+  const customWordsPerChapter = toPositiveNumber(settings.customWordsPerChapter);
+  if (settings.chapterLength === 'custom' && customWordsPerChapter) {
+    return Math.round(customWordsPerChapter);
+  }
+
+  const customBookWordCount = toPositiveNumber(settings.customWordCount);
+  if (settings.targetLength === 'custom' && customBookWordCount) {
+    const chapterCount = Math.max(1, Array.isArray(outline?.chapters) ? outline.chapters.length : 1);
+    return Math.max(200, Math.round(customBookWordCount / chapterCount));
+  }
+
+  switch (settings.chapterLength) {
+    case 'short':
+      return 1500;
+    case 'medium':
+      return 2500;
+    case 'long':
+      return 4000;
+    default:
+      return null;
+  }
+}
+
+function getTargetRange(targetWords: number | null): { minimumWords: number; maximumWords: number } | null {
+  if (!targetWords) return null;
+
+  return {
+    minimumWords: Math.max(150, Math.floor(targetWords * 0.85)),
+    maximumWords: Math.ceil(targetWords * 1.15),
+  };
+}
+
+function getMaxTokensForTarget(targetWords: number | null): number {
+  const fallbackTarget = targetWords || 2500;
+
+  // Words to tokens is not exact. For JSON content blocks, allow generous headroom
+  // so chapters do not silently stop at short summaries. Keep the default cap
+  // within the common GPT-4o output allowance unless overridden by env.
+  const configuredCap = Number(process.env.OPENAI_MAX_OUTPUT_TOKENS || 32000);
+  const safeCap = Number.isFinite(configuredCap) && configuredCap > 0 ? configuredCap : 32000;
+
+  return Math.min(
+    safeCap,
+    Math.max(12000, Math.ceil(fallbackTarget * 7) + 5000)
+  );
 }
 
 function buildLengthInstructions(settings: RewriteSettings, outline: EbookOutline): string {
   const explicitChapterTarget = getChapterTargetWords(settings, outline);
 
   if (explicitChapterTarget) {
-    const minimumWords = Math.max(150, Math.floor(explicitChapterTarget * 0.85));
-    const maximumWords = Math.ceil(explicitChapterTarget * 1.15);
+    const range = getTargetRange(explicitChapterTarget);
+    const minimumWords = range?.minimumWords || explicitChapterTarget;
+    const maximumWords = range?.maximumWords || explicitChapterTarget;
 
-    return `Write this chapter to a target length of approximately ${explicitChapterTarget} words. Aim for ${minimumWords}-${maximumWords} words. Do not stop at a short summary if the target is much longer. Expand with useful explanations, practical examples, step-by-step guidance, cautions, checklists, and reader-friendly context while avoiding meaningless filler.`;
+    return `HARD LENGTH REQUIREMENT: Write this chapter to approximately ${explicitChapterTarget} words. The accepted range is ${minimumWords}-${maximumWords} words. Do not produce a short summary. Do not stop at 500-700 words. If the source content is thin, expand it into a complete ebook chapter using practical explanations, examples, step-by-step guidance, cautions, checklists, and reader-friendly context. Avoid meaningless filler, but the chapter must still be developed to the requested length.`;
   }
 
   switch (settings.chapterLength) {
@@ -212,6 +255,8 @@ function buildRewritePrompt(
     : getAudiencePrompt(settings.audience);
 
   const lengthInstruction = buildLengthInstructions(settings, outline);
+  const targetWords = getChapterTargetWords(settings, outline);
+  const targetRange = getTargetRange(targetWords);
 
   const depthInstruction = (() => {
     switch (settings.rewriteDepth) {
@@ -250,6 +295,7 @@ ${audience}
 
 ### Length Guidelines:
 ${lengthInstruction}
+${targetWords && targetRange ? `\nIMPORTANT: The final visible chapter text should be between ${targetRange.minimumWords} and ${targetRange.maximumWords} words. This is a real formatting target, not an example value. The application will count the words after generation.` : ''}
 
 ### Rewrite Depth:
 ${depthInstruction}
@@ -270,6 +316,7 @@ ${originalContent}
 7. Format the output as clean, well-structured content
 8. Return the result as JSON with chapter content blocks
 9. Do not estimate or invent a wordCount value. The app calculates the real word count after generation.
+10. If a target word count is provided, generate enough actual body content to meet it. Do not return a brief summary.
 
 ## Output Format:
 
@@ -468,6 +515,7 @@ const openaiCall = async (prompt: string, maxTokens: number = 4000): Promise<str
         },
       ],
       max_tokens: maxTokens,
+      response_format: { type: 'json_object' },
       temperature: 0.7,
     }),
   });
@@ -504,30 +552,274 @@ export async function generateAOutline(
   }
 }
 
+function contentBlocksToPlainText(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+
+  return content.map((block: any) => {
+    if (!block) return '';
+
+    if (Array.isArray(block.items) && block.items.length > 0) {
+      return block.items.map((item: any) => item?.text || '').join('\n');
+    }
+
+    return block.content || '';
+  }).filter(Boolean).join('\n\n');
+}
+
+function buildExpansionPrompt(params: {
+  chapterTitle: string;
+  bookTitle: string;
+  originalContent: string;
+  currentContent: ChapterContent[];
+  currentWordCount: number;
+  targetWords: number;
+  settings: RewriteSettings;
+  outline: EbookOutline;
+}): string {
+  const range = getTargetRange(params.targetWords);
+  const currentText = contentBlocksToPlainText(params.currentContent);
+  const lengthInstruction = buildLengthInstructions(params.settings, params.outline);
+
+  return `You are revising an ebook chapter that is too short. Expand it properly while preserving its existing structure and meaning.
+
+## Book Title: ${params.bookTitle}
+## Chapter: ${params.chapterTitle}
+
+## Current Problem:
+The chapter currently has ${params.currentWordCount} real words, but the target is approximately ${params.targetWords} words${range ? ` with an accepted range of ${range.minimumWords}-${range.maximumWords} words` : ''}.
+
+## Length Requirement:
+${lengthInstruction}
+
+## Original Source Content:
+${params.originalContent}
+
+## Current Draft To Expand:
+${currentText}
+
+## Instructions:
+1. Expand the current draft into a complete ebook chapter.
+2. Keep the useful text already written.
+3. Add practical explanations, examples, subheadings, checklists, cautions, and reader guidance where useful.
+4. Do not add fake citations, fake statistics, or unsupported claims.
+5. Return only valid JSON using the same content block structure.
+6. Do not include a wordCount value.
+
+Return this JSON structure:
+{
+  "content": [
+    {"type": "heading", "content": "Chapter Title", "level": 1},
+    {"type": "paragraph", "content": "Paragraph text..."}
+  ],
+  "suggestions": []
+}`;
+}
+
+
+function buildContinuationPrompt(params: {
+  chapterTitle: string;
+  bookTitle: string;
+  originalContent: string;
+  existingContent: ChapterContent[];
+  currentWordCount: number;
+  targetWords: number;
+  remainingWords: number;
+  settings: RewriteSettings;
+  outline: EbookOutline;
+}): string {
+  const range = getTargetRange(params.targetWords);
+  const existingText = contentBlocksToPlainText(params.existingContent);
+  const remainingTarget = Math.max(300, Math.ceil(params.remainingWords));
+
+  return `You are continuing and expanding an ebook chapter that is still too short.
+
+## Book Title
+${params.bookTitle}
+
+## Chapter
+${params.chapterTitle}
+
+## Current Word Count
+${params.currentWordCount} real words
+
+## Target Word Count
+${params.targetWords} words${range ? `, accepted range ${range.minimumWords}-${range.maximumWords} words` : ''}
+
+## Required Additional Length
+Write approximately ${remainingTarget} additional words of NEW chapter content.
+
+## Important
+Do not rewrite the existing draft. Do not summarise it. Do not repeat the same introduction. Continue the chapter by adding useful new sections, explanations, examples, cautions, checklists, and practical guidance that naturally extend the current draft.
+
+## Original Source Content
+${params.originalContent}
+
+## Existing Draft
+${existingText}
+
+Return only valid JSON in this structure:
+{
+  "content": [
+    {"type": "heading", "content": "Additional section heading", "level": 2},
+    {"type": "paragraph", "content": "New paragraph text..."}
+  ],
+  "suggestions": []
+}`;
+}
+
+function ensureContentBlocks(value: unknown): ChapterContent[] {
+  return Array.isArray(value) ? value as ChapterContent[] : [];
+}
+
+function mergeChapterContent(existing: ChapterContent[], additional: ChapterContent[]): ChapterContent[] {
+  const normalisedExisting = ensureContentBlocks(existing);
+  const normalisedAdditional = ensureContentBlocks(additional);
+  const seen = new Set<string>();
+
+  for (const block of normalisedExisting) {
+    if (!block) continue;
+    if (typeof (block as any).content === 'string') {
+      seen.add((block as any).content.trim().toLowerCase());
+    }
+  }
+
+  const uniqueAdditional = normalisedAdditional.filter((block: any) => {
+    if (!block) return false;
+    const text = typeof block.content === 'string'
+      ? block.content.trim().toLowerCase()
+      : Array.isArray(block.items)
+        ? block.items.map((item: any) => item?.text || '').join(' ').trim().toLowerCase()
+        : '';
+
+    if (!text) return true;
+    if (seen.has(text)) return false;
+    seen.add(text);
+    return true;
+  });
+
+  return [...normalisedExisting, ...uniqueAdditional];
+}
+
+function parseRewriteJson(response: string): any {
+  const jsonMatch = response.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error('No JSON found in response');
+  }
+
+  return JSON.parse(jsonMatch[0]);
+}
+
 export async function rewriteChapterWithAI(
   chapter: Chapter,
   settings: RewriteSettings,
   outline: EbookOutline,
   bookTitle: string
 ): Promise<OpenAIRewriteChapterResult> {
-  const originalContent = chapter.originalContent || chapter.content.map(c => c.content).join('\n\n');
+  const originalContent = chapter.originalContent || contentBlocksToPlainText(chapter.content);
   const prompt = buildRewritePrompt(chapter.title, originalContent, settings, outline, bookTitle);
   const targetWords = getChapterTargetWords(settings, outline);
-  // Calculate max tokens with higher ceiling to support longer chapters
-  // Use 3.0 multiplier (1 token ≈ 0.33 words) plus buffer for JSON formatting
-  const calculatedTokens = targetWords ? Math.ceil(targetWords * 3.0) + 2000 : 10000;
-  const maxTokens = Math.min(20000, Math.max(8000, calculatedTokens));
-  const response = await openaiCall(prompt, maxTokens);
+  const targetRange = getTargetRange(targetWords);
+  const response = await openaiCall(prompt, getMaxTokensForTarget(targetWords));
 
   try {
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('No JSON found in response');
+    let result = parseRewriteJson(response);
+    result.content = ensureContentBlocks(result.content);
+    let actualWordCount = countWordsInContentBlocks(result.content);
+    const lengthWarnings: string[] = [];
+
+    // If the first answer is too short, make a full expansion attempt.
+    if (
+      targetWords &&
+      targetRange &&
+      actualWordCount > 0 &&
+      actualWordCount < targetRange.minimumWords
+    ) {
+      const expansionPrompt = buildExpansionPrompt({
+        chapterTitle: chapter.title,
+        bookTitle,
+        originalContent,
+        currentContent: result.content,
+        currentWordCount: actualWordCount,
+        targetWords,
+        settings,
+        outline,
+      });
+
+      const expandedResponse = await openaiCall(expansionPrompt, getMaxTokensForTarget(targetWords));
+      const expandedResult = parseRewriteJson(expandedResponse);
+      expandedResult.content = ensureContentBlocks(expandedResult.content);
+      const expandedWordCount = countWordsInContentBlocks(expandedResult.content);
+
+      // Keep whichever response is longer. Never throw away useful generated text.
+      if (expandedWordCount >= actualWordCount) {
+        result = expandedResult;
+        actualWordCount = expandedWordCount;
+      }
     }
-    const result = JSON.parse(jsonMatch[0]);
+
+    // Robust length guard: if the chapter is still too short, ask for NEW continuation
+    // blocks and append them. This avoids the common model behaviour of returning
+    // another short rewrite instead of reaching the requested length.
+    if (targetWords && targetRange && actualWordCount > 0) {
+      const maxContinuationPasses = Number(process.env.OPENAI_LENGTH_EXPANSION_PASSES || 3);
+      const passes = Number.isFinite(maxContinuationPasses) && maxContinuationPasses > 0
+        ? Math.min(5, Math.floor(maxContinuationPasses))
+        : 3;
+
+      for (let pass = 0; pass < passes && actualWordCount < targetRange.minimumWords; pass++) {
+        const remainingWords = targetWords - actualWordCount;
+        if (remainingWords < 150) break;
+
+        const continuationPrompt = buildContinuationPrompt({
+          chapterTitle: chapter.title,
+          bookTitle,
+          originalContent,
+          existingContent: result.content,
+          currentWordCount: actualWordCount,
+          targetWords,
+          remainingWords,
+          settings,
+          outline,
+        });
+
+        const continuationResponse = await openaiCall(
+          continuationPrompt,
+          getMaxTokensForTarget(Math.max(remainingWords, 800))
+        );
+        const continuationResult = parseRewriteJson(continuationResponse);
+        const continuationContent = ensureContentBlocks(continuationResult.content);
+
+        if (continuationContent.length === 0) break;
+
+        const mergedContent = mergeChapterContent(result.content, continuationContent);
+        const mergedWordCount = countWordsInContentBlocks(mergedContent);
+
+        if (mergedWordCount <= actualWordCount) break;
+
+        result = {
+          ...result,
+          content: mergedContent,
+          suggestions: [
+            ...(Array.isArray(result.suggestions) ? result.suggestions : []),
+            ...(Array.isArray(continuationResult.suggestions) ? continuationResult.suggestions : []),
+          ],
+        };
+        actualWordCount = mergedWordCount;
+      }
+    }
+
+    if (targetWords && targetRange && actualWordCount < targetRange.minimumWords) {
+      lengthWarnings.push(`Generated chapter is ${actualWordCount} words, below the requested ${targetWords}-word target. The app preserved the chapter and added as much expansion as the model returned.`);
+    }
+
     return {
       ...result,
-      wordCount: countWordsInContentBlocks(result.content),
+      content: ensureContentBlocks(result.content),
+      wordCount: actualWordCount,
+      suggestions: [
+        ...(Array.isArray(result.suggestions) ? result.suggestions : []),
+        ...lengthWarnings,
+      ],
     };
   } catch (e) {
     console.error('Failed to parse rewrite response:', e);
