@@ -1,0 +1,362 @@
+# EbookForge Admin
+
+A private, single-admin web application for uploading Word documents, rewriting them into professional ebooks using OpenAI, generating AI images, and exporting in multiple formats ready for Amazon KDP publishing.
+
+---
+
+## Summary of Features
+
+**EbookForge Admin** is a complete ebook production pipeline for solo authors and content creators:
+
+- **Authentication**: Password-only admin login with JWT sessions
+- **Document Upload**: DOCX upload with automatic text extraction and structure analysis
+- **AI Outline Generation**: GPT-4o analyzes content and creates professional chapter structures
+- **Comprehensive Rewrite Settings**: Book type, tone, audience, depth, content additions
+- **Chapter-by-Chapter Rewriting**: Process content one chapter at a time
+- **AI Image Generation**: DALL-E 3 integration for chapter illustrations
+- **KDP-Ready Exports**: DOCX, PDF (hardcover layout), EPUB 3.0 packages
+- **Sample Mode**: Test the full workflow without uploading files
+- **Project Persistence**: Save/load project JSON for resuming work
+
+---
+
+## Required Environment Variables
+
+```env
+# OpenAI API (required for AI features)
+OPENAI_API_KEY=sk-your-openai-api-key
+
+# Admin authentication (required)
+ADMIN_PASSWORD=your_secure_password_here
+SESSION_SECRET=random_32_character_string_minimum
+```
+
+- `ADMIN_PASSWORD`: The password required to access the admin panel
+- `SESSION_SECRET`: Random string used to sign JWT tokens (min 32 characters)
+- `OPENAI_API_KEY`: Your OpenAI API key with GPT-4o and DALL-E 3 access
+
+---
+
+## How Password Login Works
+
+The application uses JWT-based authentication with HTTP-only cookies:
+
+1. **Login Page** (`/login`): Admin enters the password
+2. **Validation**: Password compared against `ADMIN_PASSWORD` environment variable
+3. **Session Creation**: On success, a JWT token is created with `jose` library
+   - Algorithm: HS256
+   - Expiration: 24 hours
+   - Stored in HTTP-only cookie (`ebookforge_session`)
+4. **Route Protection**: Middleware checks for valid token on all `/admin/*` routes
+5. **Authentication Check**: Each API call verifies the JWT signature and expiration
+
+Key security features:
+- HTTP-only cookies (not accessible via JavaScript)
+- Secure flag in production
+- Same-site lax policy
+- No password stored in database or localStorage
+
+---
+
+## How Document Upload Works
+
+1. **File Selection**: Drag-and-drop or click to upload `.docx` files (up to 10MB)
+2. **Text Extraction**: `mammoth.js` extracts raw text while preserving structure
+3. **Document Analysis**: The server identifies:
+   - Word count and estimated reading time
+   - Detected sections and headings
+   - Paragraph patterns
+4. **Preview**: Shows extracted content with section breakdown
+5. **Alternatives**:
+   - **From Scratch**: Create empty project without uploading
+   - **Sample Mode**: Pre-loaded sample personal finance ebook for testing
+
+The analyzed document is stored in browser localStorage for the entire session.
+
+---
+
+## How OpenAI Rewriting Works
+
+### Outline Generation
+- Uses `gpt-4o` model
+- Analyzes document title, raw text, and detected sections
+- Generates structured chapter outline with title, summary, and sections
+- Respects settings: book type, audience, content additions
+
+### Chapter Rewriting
+- Each chapter sent individually to avoid token limits
+- Prompt includes:
+  - Book type (nonfiction guide, novel, memoir, etc.)
+  - Writing tone (professional, conversational, academic, etc.)
+  - Audience level (general, beginner, expert)
+  - Paragraph style (short, medium, long, balanced)
+  - Bullet frequency (sparse, moderate, frequent)
+  - Content additions (exercises, examples, case studies, key takeaways)
+- Returns structured content with paragraphs, headings, lists, callouts
+- Original content is locked and can be referenced
+
+---
+
+## How Image Generation Works
+
+1. **Prompt Generation**: AI analyzes chapter content and suggests 1-3 image prompts
+   - Suggests placement points within the text
+   - Describes relevant subject matter
+   - Offers style options (photorealistic, illustration, infographic)
+
+2. **Admin Review**: Each prompt can be:
+   - Approved for generation
+   - Edited before generation
+   - Rejected
+
+3. **DALL-E 3 Generation**: Approved prompts sent to `dall-e-3` model
+   - Standard quality, 1024x1024 pixels
+   - Returns base64 image data
+
+4. **Gallery Management**: View all generated images, regenerate specific ones
+
+5. **Export Integration**: Images included in all export formats
+
+---
+
+## How Exports Work
+
+### DOCX Export
+- Full document with:
+  - Title page (centered title, subtitle, author)
+  - Copyright page
+  - Table of contents
+  - Chapters with headings, paragraphs, lists
+  - Image placeholders with captions
+- Built with `docx` npm package
+- Compatible with Microsoft Word, Google Docs, LibreOffice
+
+### PDF Export (Hardcover Layout for KDP)
+**Page Sizes Available:**
+- 5 x 8 inches
+- 5.5 x 8.5 inches
+- 6 x 9 inches (default)
+- Trade paperback (5.25 x 8)
+
+**Alternating Margins for Hardcover Binding:**
+- Inside margin (gutter): 0.75 inches
+- Outside margin: 0.5 inches
+- Left pages: gutter on left, outside on right
+- Right pages: gutter on right, outside on left
+
+**Headers and Page Numbers:**
+- Even pages: Book title in header (left side)
+- Odd pages: Chapter title in header (right side)
+- Page numbers on bottom outer edge
+- Front matter pages (title, copyright, TOC): NO headers or page numbers
+
+**Typography:**
+- First paragraph after heading: no indent
+- Subsequent paragraphs: 1.5em indent
+- Line height: 1.7 for readability
+
+Built with `@react-pdf/renderer`.
+
+### EPUB 3.0 Export (Kindle Direct Publishing Ready)
+Outputs a **true `.epub` file** - no conversion required.
+
+**Structure:**
+```
+mimetype (uncompressed, first file)
+/META-INF/
+  container.xml
+/OEBPS/
+  content.opf
+  toc.ncx
+  nav.xhtml
+  styles.css
+  title_page.xhtml
+  copyright_page.xhtml (optional)
+  chapters/
+    chapter_01.xhtml
+    chapter_02.xhtml
+    ...
+  images/
+    image_001.jpg
+    ...
+```
+
+**Key Features:**
+- **mimetype file**: Uncompressed (`STORE` compression) as required by EPUB spec
+- **Valid EPUB 3.0**: Passes KDP validation without external software
+- Separate XHTML files for each chapter
+- Valid `toc.ncx` navigation file with navPoints
+- EPUB 3 navigation document (`nav.xhtml`)
+- `content.opf` manifest and spine
+
+**CSS Paragraph Indentation (KDP Standard):**
+```css
+p + p {
+  text-indent: 1.5em;
+  margin: 0;
+}
+
+/* First paragraph after heading has no indent */
+.chapter-content > p:first-of-type {
+  text-indent: 0;
+}
+```
+
+**Ready For:**
+- Upload **directly** to Amazon KDP - no conversion needed
+- Preview with Kindle Previewer (optional)
+
+### Images ZIP
+All generated images bundled as separate JPG files for external use.
+
+### Project JSON
+Full project state saved for resuming work later. Contains all chapters, settings, and images as base64.
+
+---
+
+## How to Run Locally
+
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Create environment file
+cp .env.example .env.local
+
+# 3. Edit .env.local with your values:
+#    OPENAI_API_KEY=sk-your-key
+#    ADMIN_PASSWORD=your-password
+#    SESSION_SECRET=random-32-char-string
+
+# 4. Start development server
+npm run dev
+
+# 5. Open browser
+#    http://localhost:3000
+```
+
+The dev server will automatically redirect you to login if not authenticated.
+
+---
+
+## How to Deploy to Vercel
+
+1. **Push to GitHub**: Commit all files to a Git repository
+
+2. **Import in Vercel**:
+   - Go to vercel.com
+   - Click "Add New Project"
+   - Import your GitHub repository
+
+3. **Set Environment Variables**:
+   In the Vercel dashboard, add these environment variables:
+   - `OPENAI_API_KEY` - Your OpenAI API key
+   - `ADMIN_PASSWORD` - Secure admin password
+   - `SESSION_SECRET` - Random 32+ character string
+
+4. **Deploy**: Click Deploy and wait for build to complete
+
+5. **Access**: Your app will be available at `your-project.vercel.app`
+
+---
+
+## Known Limitations
+
+1. **No Database**: Projects stored in browser localStorage only
+   - Clearing browser data loses all projects
+   - Export project JSON to save backups
+
+2. **Image Storage**: Images stored as base64 in project JSON
+   - Large projects may have large JSON files
+   - Use "Images ZIP" export for external storage
+
+3. **Single Admin**: Only one admin password supported
+   - No multi-user authentication
+   - No role-based access control
+
+4. **OpenAI Costs**: All AI features require OpenAI API calls
+   - Outline generation: ~$0.01-0.03 per document
+   - Chapter rewriting: ~$0.01-0.05 per chapter
+   - Image generation: $0.04 per image (DALL-E 3)
+
+5. **PDF Layouts**: Complex formatting may not render perfectly
+   - Images shown as placeholders
+   - Tables not supported
+
+---
+
+## Technical Stack
+
+| Component | Technology |
+|-----------|------------|
+| Framework | Next.js 16 (App Router) |
+| Language | TypeScript |
+| Styling | Tailwind CSS |
+| Authentication | jose (JWT) |
+| Document Parsing | mammoth.js |
+| DOCX Generation | docx package |
+| PDF Generation | @react-pdf/renderer |
+| EPUB/ZIP Creation | JSZip |
+| AI Text | OpenAI GPT-4o |
+| AI Images | OpenAI DALL-E 3 |
+| Validation | Zod |
+
+---
+
+## Application Structure
+
+```
+app/
+├── login/page.tsx          - Password login
+├── admin/
+│   ├── layout.tsx          - Sidebar navigation wrapper
+│   ├── page.tsx           - Dashboard
+│   ├── new/page.tsx       - Start new project
+│   ├── upload/page.tsx    - DOCX upload
+│   ├── outline/page.tsx   - Chapter outline editor
+│   ├── settings/page.tsx  - Rewrite/formatting/image settings
+│   ├── chapters/page.tsx  - Chapter editor with AI rewrite
+│   ├── images/page.tsx    - Image prompt/generation
+│   ├── preview/page.tsx   - Full book preview
+│   └── export/page.tsx    - Export options
+├── api/
+│   ├── auth/              - Login, logout, check
+│   ├── extract-docx/      - DOCX text extraction
+│   ├── generate-outline/  - AI outline generation
+│   ├── rewrite-chapter/   - AI chapter rewriting
+│   ├── generate-image-prompts/  - AI image suggestions
+│   ├── generate-image/    - DALL-E 3 image generation
+│   └── export/
+│       ├── docx/          - Word export
+│       ├── pdf/           - PDF export (hardcover layout)
+│       ├── epub/          - EPUB 3.0 package
+│       └── images-zip/    - Images bundle
+lib/
+├── auth.ts                - JWT authentication
+├── types.ts               - TypeScript interfaces
+├── constants.ts           - Config options, templates
+└── openai-utils.ts        - OpenAI integration
+middleware.ts              - Route protection
+```
+
+---
+
+## Workflow Diagram
+
+```
+Upload Document → Generate Outline → Settings → Rewrite Chapters → Generate Images → Preview → Export
+```
+
+1. **Upload**: Extract text, analyze structure, estimate word count
+2. **Outline**: AI generates chapter breakdown, drag to reorder, lock to protect
+3. **Settings**: Choose book type, tone, audience, paragraph style, additions
+4. **Chapters**: Rewrite one by one, edit output, add notes
+5. **Images**: Generate prompts, approve, create with DALL-E
+6. **Preview**: Review full book, check publishing readiness
+7. **Export**: Download DOCX/PDF/EPUB/JSON
+
+---
+
+## License
+
+Private tool - All rights reserved.
