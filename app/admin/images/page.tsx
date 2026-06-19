@@ -110,6 +110,13 @@ export default function ImagesPage() {
         : `data:${image.mimeType || 'image/png'};base64,${image.base64Data}`;
     }
 
+    // Prefer our own server-side proxy route for Supabase-stored images.
+    // This avoids broken/expired signed URLs in the browser and keeps the
+    // Supabase service role key safely on the server.
+    if (image.storagePath) {
+      return `/api/images/view?path=${encodeURIComponent(image.storagePath)}`;
+    }
+
     return image.previewUrl || image.generatedUrl || image.storageUrl || '';
   };
 

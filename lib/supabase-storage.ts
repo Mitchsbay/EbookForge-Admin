@@ -76,8 +76,15 @@ export function getImageMimeType(image: any): string {
     return image.mimeType;
   }
 
-  if (typeof image?.extension === 'string') {
-    const extension = image.extension.toLowerCase().replace(/^\./, '');
+  const extensionSources = [image?.extension, image?.storagePath, image?.filename, image?.generatedUrl, image?.previewUrl]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+  for (const source of extensionSources) {
+    const cleanSource = source.split('?')[0].toLowerCase();
+    const extension = cleanSource.includes('.')
+      ? cleanSource.split('.').pop()?.replace(/^\./, '')
+      : cleanSource.replace(/^\./, '');
+
     if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
     if (extension === 'webp') return 'image/webp';
     if (extension === 'png') return 'image/png';
@@ -184,9 +191,9 @@ function resolveSupabaseSignedUrl(supabaseUrl: string, signedUrl: string): strin
     return signedUrl;
   }
 
-  // Supabase usually returns a relative signedURL like:
+  // Supabase Storage returns relative signed URLs such as:
   // /object/sign/<bucket>/<path>?token=...
-  // Browser image tags need:
+  // Browser image tags need the full Storage API prefix:
   // https://project.supabase.co/storage/v1/object/sign/<bucket>/<path>?token=...
   if (signedUrl.startsWith('/storage/v1/')) {
     return `${supabaseUrl}${signedUrl}`;
