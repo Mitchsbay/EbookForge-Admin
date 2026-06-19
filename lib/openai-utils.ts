@@ -157,7 +157,10 @@ function buildLengthInstructions(settings: RewriteSettings, outline: EbookOutlin
   const explicitChapterTarget = getChapterTargetWords(settings, outline);
 
   if (explicitChapterTarget) {
-    return `Target approximately ${explicitChapterTarget} words for this chapter. This is a target, not a guarantee, but make a genuine effort to reach it while avoiding filler.`;
+    const minimumWords = Math.max(150, Math.floor(explicitChapterTarget * 0.85));
+    const maximumWords = Math.ceil(explicitChapterTarget * 1.15);
+
+    return `Write this chapter to a target length of approximately ${explicitChapterTarget} words. Aim for ${minimumWords}-${maximumWords} words. Do not stop at a short summary if the target is much longer. Expand with useful explanations, practical examples, step-by-step guidance, cautions, checklists, and reader-friendly context while avoiding meaningless filler.`;
   }
 
   switch (settings.chapterLength) {
@@ -501,7 +504,9 @@ export async function rewriteChapterWithAI(
 ): Promise<OpenAIRewriteChapterResult> {
   const originalContent = chapter.originalContent || chapter.content.map(c => c.content).join('\n\n');
   const prompt = buildRewritePrompt(chapter.title, originalContent, settings, outline, bookTitle);
-  const response = await openaiCall(prompt, 8000);
+  const targetWords = getChapterTargetWords(settings, outline);
+  const maxTokens = Math.min(16000, Math.max(8000, Math.ceil((targetWords || 2500) * 2.8) + 2000));
+  const response = await openaiCall(prompt, maxTokens);
 
   try {
     const jsonMatch = response.match(/\{[\s\S]*\}/);

@@ -50,6 +50,8 @@ interface Project {
   title: string;
   subtitle: string;
   author: string;
+  status?: string;
+  updatedAt?: string;
   outline: {
     chapters: { id: string; title: string; summary: string; isLocked: boolean }[];
   };
@@ -129,25 +131,67 @@ export default function ChaptersPage() {
     }
   };
 
+  const persistProject = useCallback((nextChapters: Chapter[], status: string = 'rewriting') => {
+    const chaptersWithCounts = normaliseChapterWordCounts(nextChapters);
+
+    setChapters(chaptersWithCounts);
+    setProject(prevProject => {
+      const baseProject = prevProject || project;
+      if (!baseProject) return prevProject;
+
+      const updatedProject = {
+        ...baseProject,
+        chapters: chaptersWithCounts,
+        updatedAt: new Date().toISOString(),
+        status,
+      };
+
+      localStorage.setItem('ebookforge_project', JSON.stringify(updatedProject));
+      return updatedProject;
+    });
+
+    setHasUnsavedChanges(false);
+    return chaptersWithCounts;
+  }, [project]);
+
   const saveProject = useCallback(async () => {
     if (!project) return;
 
     setSaving(true);
-    const chaptersWithCounts = normaliseChapterWordCounts(chapters);
-
-    const updatedProject = {
-      ...project,
-      chapters: chaptersWithCounts,
-      updatedAt: new Date().toISOString(),
-      status: 'rewriting',
-    };
-
-    localStorage.setItem('ebookforge_project', JSON.stringify(updatedProject));
-    setProject(updatedProject);
-    setChapters(chaptersWithCounts);
-    setHasUnsavedChanges(false);
+    persistProject(chapters, project.status || 'rewriting');
     setSaving(false);
-  }, [project, chapters]);
+  }, [project, chapters, persistProject]);
+
+  const requestChapterRewrite = async (chapterToRewrite: Chapter): Promise<Chapter> => {
+    if (!project) {
+      throw new Error('No project loaded');
+    }
+
+    const response = await fetch('/api/rewrite-chapter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chapter: chapterToRewrite,
+        settings: project.settings,
+        outline: project.outline,
+        bookTitle: project.title,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to rewrite chapter');
+    }
+
+    return {
+      ...chapterToRewrite,
+      content: data.chapter.content,
+      wordCount: countWordsInContentBlocks(data.chapter.content),
+      status: 'rewritten' as const,
+      lastEdited: new Date().toISOString(),
+    };
+  };
 
   const rewriteChapter = async (chapterId: string) => {
     if (!project) return;
@@ -155,73 +199,39 @@ export default function ChaptersPage() {
     const chapter = chapters.find(c => c.id === chapterId);
     if (!chapter) return;
 
-    // Check for OpenAI key
-    if (!process.env.NEXT_PUBLIC_OPENAI_KEY_EXISTS) {
-      // Will be handled server-side
-    }
-
     setError(null);
     setRewriting(true);
 
-    // Update status to rewriting
-    setChapters(prev =>
-      prev.map(c =>
-        c.id === chapterId ? { ...c, status: 'rewriting' } : c
+    let workingChapters = normaliseChapterWordCounts(
+      chapters.map(c =>
+        c.id === chapterId ? { ...c, status: 'rewriting' as const } : c
       )
     );
+    persistProject(workingChapters, 'rewriting');
 
     try {
-      const response = await fetch('/api/rewrite-chapter', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chapter,
-          settings: project.settings,
-          outline: project.outline,
-          bookTitle: project.title,
-        }),
-      });
+      const chapterToRewrite = workingChapters.find(c => c.id === chapterId) || chapter;
+      const rewrittenChapter = await requestChapterRewrite(chapterToRewrite);
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to rewrite chapter');
-      }
-
-      const nextChapters = normaliseChapterWordCounts(
-        chapters.map(c =>
-          c.id === chapterId
-            ? {
-                ...c,
-                content: data.chapter.content,
-                wordCount: countWordsInContentBlocks(data.chapter.content),
-                status: 'rewritten' as const,
-                lastEdited: new Date().toISOString(),
-              }
-            : c
+      workingChapters = normaliseChapterWordCounts(
+        workingChapters.map(c =>
+          c.id === chapterId ? rewrittenChapter : c
         )
       );
 
-      const updatedProject = {
-        ...project,
-        chapters: nextChapters,
-        updatedAt: new Date().toISOString(),
-        status: 'rewriting',
-      };
-
-      localStorage.setItem('ebookforge_project', JSON.stringify(updatedProject));
-      setChapters(nextChapters);
-      setProject(updatedProject);
+      persistProject(workingChapters, 'rewriting');
     } catch (err: any) {
       setError(err.message);
-      setChapters(prev =>
-        prev.map(c =>
-          c.id === chapterId ? { ...c, status: 'pending' } : c
+
+      workingChapters = normaliseChapterWordCounts(
+        workingChapters.map(c =>
+          c.id === chapterId ? { ...c, status: 'pending' as const } : c
         )
       );
+      persistProject(workingChapters, 'rewriting');
+    } finally {
+      setRewriting(false);
     }
-
-    setRewriting(false);
   };
 
   const rewriteAllChapters = async () => {
@@ -230,21 +240,45 @@ export default function ChaptersPage() {
     setRewritingAll(true);
     setError(null);
 
-    for (let i = 0; i < chapters.length; i++) {
-      const chapter = chapters[i];
-      if (chapter.status === 'complete' || chapter.status === 'rewritten') {
-        continue;
+    // Keep a local working copy. Do not call rewriteChapter() from here, because
+    // that can close over stale React state and overwrite earlier completed chapters.
+    let workingChapters = normaliseChapterWordCounts(chapters);
+
+    try {
+      for (let i = 0; i < workingChapters.length; i++) {
+        const chapter = workingChapters[i];
+        if (chapter.status === 'complete' || chapter.status === 'rewritten') {
+          continue;
+        }
+
+        setCurrentRewriteIndex(i);
+
+        workingChapters = normaliseChapterWordCounts(
+          workingChapters.map(c =>
+            c.id === chapter.id ? { ...c, status: 'rewriting' as const } : c
+          )
+        );
+        persistProject(workingChapters, 'rewriting');
+
+        const chapterToRewrite = workingChapters.find(c => c.id === chapter.id) || chapter;
+        const rewrittenChapter = await requestChapterRewrite(chapterToRewrite);
+
+        workingChapters = normaliseChapterWordCounts(
+          workingChapters.map(c =>
+            c.id === chapter.id ? rewrittenChapter : c
+          )
+        );
+
+        // Save after every chapter so completed chapters survive page refreshes,
+        // failed later chapters, and React re-renders.
+        persistProject(workingChapters, 'rewriting');
       }
-
-      setCurrentRewriteIndex(i);
-      await rewriteChapter(chapter.id);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setCurrentRewriteIndex(-1);
+      setRewritingAll(false);
     }
-
-    setCurrentRewriteIndex(-1);
-    setRewritingAll(false);
-
-    // Save after all chapters are rewritten
-    await saveProject();
   };
 
   const updateChapterContent = (chapterId: string, content: string) => {
