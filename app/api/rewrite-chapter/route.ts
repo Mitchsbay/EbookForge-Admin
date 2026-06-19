@@ -1,18 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getChapterTargetWords, rewriteChapterWithAI } from '@/lib/openai-utils';
+import { rewriteChapterWithAI } from '@/lib/openai-utils';
 import { RewriteSettings, EbookOutline, Chapter } from '@/lib/types';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { countWordsInContentBlocks } from '@/lib/word-count';
-
-const optionalPositiveNumber = z.preprocess((value) => {
-  if (value === '' || value === null || typeof value === 'undefined') return undefined;
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : value;
-  }
-  return value;
-}, z.number().positive().optional());
 
 const rewriteRequestSchema = z.object({
   chapter: z.object({
@@ -31,8 +22,8 @@ const rewriteRequestSchema = z.object({
     bulletStyle: z.string(),
     rewriteDepth: z.string(),
     contentAdditions: z.array(z.string()),
-    customWordCount: optionalPositiveNumber,
-    customWordsPerChapter: optionalPositiveNumber,
+    customWordCount: z.number().optional().nullable(),
+    customWordsPerChapter: z.number().optional().nullable(),
     customAudience: z.string().optional().nullable(),
   }),
   outline: z.object({
@@ -63,15 +54,11 @@ export async function POST(request: NextRequest) {
 
     const { chapter, settings, outline, bookTitle } = parsed.data;
 
-    const typedSettings = settings as RewriteSettings;
-    const typedOutline = outline as EbookOutline;
-    const targetWords = getChapterTargetWords(typedSettings, typedOutline);
-
     // Rewrite the chapter (cast types)
     const result = await rewriteChapterWithAI(
       chapter as Chapter,
-      typedSettings,
-      typedOutline,
+      settings as RewriteSettings,
+      outline as EbookOutline,
       bookTitle
     );
 
@@ -98,7 +85,6 @@ export async function POST(request: NextRequest) {
         lastEdited: new Date().toISOString(),
       },
       suggestions: result.suggestions || [],
-      targetWords,
     });
   } catch (error: any) {
     console.error('Rewrite chapter error:', error);

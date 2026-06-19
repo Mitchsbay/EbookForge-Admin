@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { countWordsInContentBlocks, countWordsInText, normaliseChapterWordCounts } from '@/lib/word-count';
 import {
@@ -66,7 +66,6 @@ interface Project {
 export default function ChaptersPage() {
   const router = useRouter();
   const [project, setProject] = useState<Project | null>(null);
-  const projectRef = useRef<Project | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null);
   const [rewriting, setRewriting] = useState(false);
@@ -78,10 +77,6 @@ export default function ChaptersPage() {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   const selectedChapter = chapters.find(c => c.id === selectedChapterId);
-
-  useEffect(() => {
-    projectRef.current = project;
-  }, [project]);
 
   useEffect(() => {
     loadProject();
@@ -97,7 +92,6 @@ export default function ChaptersPage() {
           ...parsed,
           chapters: normaliseChapterWordCounts(parsed.chapters),
         };
-        projectRef.current = parsedWithCounts;
         setProject(parsedWithCounts);
 
         // Initialize chapters if not exists
@@ -125,7 +119,6 @@ export default function ChaptersPage() {
           setChapters(initialChapters);
           setSelectedChapterId((current) => current || initialChapters[0]?.id || null);
           const projectWithInitialChapters = { ...parsedWithCounts, chapters: initialChapters };
-          projectRef.current = projectWithInitialChapters;
           setProject(projectWithInitialChapters);
           localStorage.setItem('ebookforge_project', JSON.stringify(projectWithInitialChapters));
         }
@@ -140,24 +133,33 @@ export default function ChaptersPage() {
 
   const persistProject = useCallback((nextChapters: Chapter[], status: string = 'rewriting') => {
     const chaptersWithCounts = normaliseChapterWordCounts(nextChapters);
-    const baseProject = projectRef.current || project;
 
-    if (!baseProject) {
-      setChapters(chaptersWithCounts);
-      return chaptersWithCounts;
-    }
-
-    const updatedProject = {
-      ...baseProject,
-      chapters: chaptersWithCounts,
-      updatedAt: new Date().toISOString(),
-      status,
-    };
-
-    projectRef.current = updatedProject;
     setChapters(chaptersWithCounts);
-    setProject(updatedProject);
-    localStorage.setItem('ebookforge_project', JSON.stringify(updatedProject));
+    setProject(prevProject => {
+      const baseProject = prevProject || project;
+      if (!baseProject) return prevProject;
+
+      const updatedProject = {
+        ...baseProject,
+        chapters: chaptersWithCounts,
+        updatedAt: new Date().toISOString(),
+        status,
+      };
+
+      // Persist to localStorage immediately
+      localStorage.setItem('ebookforge_project', JSON.stringify(updatedProject));
+      
+      // Also sync to server for durability across sessions
+      void fetch('/api/projects/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedProject),
+      }).catch((error) => {
+        console.warn('Could not sync project to server:', error);
+      });
+
+      return updatedProject;
+    });
 
     setHasUnsavedChanges(false);
     return chaptersWithCounts;
@@ -172,8 +174,7 @@ export default function ChaptersPage() {
   }, [project, chapters, persistProject]);
 
   const requestChapterRewrite = async (chapterToRewrite: Chapter): Promise<Chapter> => {
-    const activeProject = projectRef.current || project;
-    if (!activeProject) {
+    if (!project) {
       throw new Error('No project loaded');
     }
 
@@ -182,9 +183,9 @@ export default function ChaptersPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         chapter: chapterToRewrite,
-        settings: activeProject.settings,
-        outline: activeProject.outline,
-        bookTitle: activeProject.title,
+        settings: project.settings,
+        outline: project.outline,
+        bookTitle: project.title,
       }),
     });
 
