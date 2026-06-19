@@ -15,8 +15,10 @@ export async function POST(request: NextRequest) {
     }
 
     // 2. Ensure the OpenAI initialization is robust.
+    // Use the official OpenAI API base URL to ensure compatibility with DALL-E 3 parameters like response_format
     const openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
+      baseURL: 'https://api.openai.com/v1',
     });
 
     // 3. Use the exact DALL-E 3 payload structure.
