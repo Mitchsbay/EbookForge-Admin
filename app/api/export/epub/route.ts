@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import JSZip from 'jszip';
 import { z } from 'zod';
+import {
+  getImageMimeType,
+  getSafeImageFileName,
+  getSafeImageId,
+  resolveImageForExport,
+} from '@/lib/supabase-storage';
+
+export const runtime = 'nodejs';
 
 const exportRequestSchema = z.object({
   title: z.string(),
@@ -71,16 +79,36 @@ function getHtmlFromContent(block: any): string {
         : 'callout-note';
       return `<aside class="callout ${calloutClass}"><p>${escapeHtml(block.content)}</p></aside>`;
 
-    case 'image':
-      return `<figure class="image"><img src="../images/${block.imageId || block.id}.jpg" alt="${escapeHtml(block.altText || block.caption || 'Image')}" />${block.caption ? `<figcaption>${escapeHtml(block.caption)}</figcaption>` : ''}</figure>`;
+    case 'image': {
+      const fileName = getSafeImageFileName({
+        id: block.imageId || block.id,
+        mimeType: block.mimeType || 'image/png',
+        extension: block.extension || 'png',
+      });
+      return `<figure class="image"><img src="../images/${fileName}" alt="${escapeHtml(block.altText || block.caption || 'Image')}" />${block.caption ? `<figcaption>${escapeHtml(block.caption)}</figcaption>` : ''}</figure>`;
+    }
 
     default:
       return '';
   }
 }
 
+function generateChapterImageFigures(chapter: any): string {
+  return (chapter.images || [])
+    .map((image: any) => {
+      const fileName = getSafeImageFileName(image);
+      const altText = escapeHtml(image.altText || image.caption || 'Generated ebook image');
+      const caption = image.caption ? `<figcaption>${escapeHtml(image.caption)}</figcaption>` : '';
+      return `<figure class="image"><img src="../images/${fileName}" alt="${altText}" />${caption}</figure>`;
+    })
+    .join('\n      ');
+}
+
 function generateChapterXhtml(chapter: any, chapterIndex: number, totalChapters: number): string {
-  const contentHtml = (chapter.content || []).map(getHtmlFromContent).join('\n    ');
+  const generatedImagesHtml = generateChapterImageFigures(chapter);
+  const contentHtml = [generatedImagesHtml, (chapter.content || []).map(getHtmlFromContent).join('\n    ')]
+    .filter(Boolean)
+    .join('\n    ');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -233,6 +261,13 @@ function generateContentOpf(title: string, author: string, uuid: string, chapter
   chapters.forEach((ch, i) => {
     const chapterNum = String(i + 1).padStart(2, '0');
     manifestItems.push(`<item id="chapter-${chapterNum}" href="chapters/chapter_${chapterNum}.xhtml" media-type="application/xhtml+xml"/>`);
+
+    (ch.images || []).forEach((image: any) => {
+      const fileName = getSafeImageFileName(image);
+      const manifestId = `image-${getSafeImageId(image)}`;
+      const mediaType = getImageMimeType(image);
+      manifestItems.push(`<item id="${manifestId}" href="images/${fileName}" media-type="${mediaType}"/>`);
+    });
   });
 
   const spineItems = [
@@ -569,13 +604,14 @@ export async function POST(request: NextRequest) {
       chaptersFolder?.file(`chapter_${chapterNumber}.xhtml`, chapterXhtml);
     }
 
-    // Add images
+    // Add images from local base64 data or Supabase Storage into the EPUB package.
     if (imagesFolder) {
       for (const chapter of chapters) {
         if (chapter.images && chapter.images.length > 0) {
           for (const image of chapter.images) {
-            if (image.base64Data) {
-              imagesFolder.file(`${image.id}.jpg`, image.base64Data, { base64: true });
+            const exportImage = await resolveImageForExport(image);
+            if (exportImage) {
+              imagesFolder.file(exportImage.filename, exportImage.buffer);
             }
           }
         }

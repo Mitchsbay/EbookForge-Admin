@@ -279,6 +279,13 @@ export interface EbookImage {
   prompt: string;
   generatedUrl?: string;
   base64Data?: string;
+  storagePath?: string;
+  previewUrl?: string;
+  storageUrl?: string;
+  storageProvider?: 'local' | 'supabase';
+  mimeType?: string;
+  extension?: string;
+  storageWarning?: string;
   style: ImageStyle;
   aspectRatio: ImageAspectRatio;
   caption: string;

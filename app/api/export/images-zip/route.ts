@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import JSZip from 'jszip';
 import { z } from 'zod';
+import { resolveImageForExport } from '@/lib/supabase-storage';
+
+export const runtime = 'nodejs';
 
 const exportRequestSchema = z.object({
   chapters: z.array(z.object({
@@ -26,15 +29,16 @@ export async function POST(request: NextRequest) {
 
     const zip = new JSZip();
 
-    // Collect all images
+    // Collect all images from local base64 or Supabase Storage paths.
     let imageCount = 0;
     for (const chapter of chapters) {
       if (chapter.images && chapter.images.length > 0) {
         for (const image of chapter.images) {
-          if (image.base64Data) {
+          const exportImage = await resolveImageForExport(image);
+          if (exportImage) {
             const sanitizedTitle = chapter.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-            const fileName = `${sanitizedTitle}_${image.id}.jpg`;
-            zip.file(fileName, image.base64Data, { base64: true });
+            const fileName = `${sanitizedTitle}_${exportImage.filename}`;
+            zip.file(fileName, exportImage.buffer);
             imageCount++;
           }
         }
@@ -50,7 +54,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Generate ZIP
     const zipContent = await zip.generateAsync({ type: 'nodebuffer' });
     const base64 = zipContent.toString('base64');
 

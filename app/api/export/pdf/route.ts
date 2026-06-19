@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import z from 'zod';
 import React from 'react';
-import { Document, Page, Text, View, StyleSheet, Font, pdf } from '@react-pdf/renderer';
+import { Document, Page, Text, View, StyleSheet, Image as PdfImage, pdf } from '@react-pdf/renderer';
+import { resolveImageForExport } from '@/lib/supabase-storage';
+
+export const runtime = 'nodejs';
 
 const exportRequestSchema = z.object({
   title: z.string(),
@@ -39,13 +42,6 @@ const OUTSIDE_MARGIN = 0.5 * 72; // Outside margin - 0.5 inches
 const TOP_MARGIN = 0.5 * 72; // Top margin
 const BOTTOM_MARGIN = 0.75 * 72; // Bottom margin for page numbers
 
-// Register Georgia-like font
-Font.register({
-  family: 'Georgia',
-  fonts: [
-    { src: 'https://fonts.gstatic.com/s/opensans/v40/mem8YaGs126MiZpBA-UFVZ0b.woff2' },
-  ],
-});
 
 interface PageProps {
   pageNumber: number;
@@ -60,7 +56,7 @@ function createStyles(pageSize: [number, number]) {
       paddingBottom: BOTTOM_MARGIN,
       paddingLeft: OUTSIDE_MARGIN,
       paddingRight: GUTTER_MARGIN,
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
       width: pageSize[0],
       height: pageSize[1],
     },
@@ -70,7 +66,7 @@ function createStyles(pageSize: [number, number]) {
       paddingBottom: BOTTOM_MARGIN,
       paddingLeft: GUTTER_MARGIN,
       paddingRight: OUTSIDE_MARGIN,
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
       width: pageSize[0],
       height: pageSize[1],
     },
@@ -80,7 +76,7 @@ function createStyles(pageSize: [number, number]) {
       paddingBottom: BOTTOM_MARGIN,
       paddingLeft: OUTSIDE_MARGIN,
       paddingRight: OUTSIDE_MARGIN,
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
       width: pageSize[0],
       height: pageSize[1],
     },
@@ -93,7 +89,7 @@ function createStyles(pageSize: [number, number]) {
       fontSize: 9,
       color: '#666666',
       textAlign: 'left',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
       fontStyle: 'italic',
     },
     headerOdd: {
@@ -104,7 +100,7 @@ function createStyles(pageSize: [number, number]) {
       fontSize: 9,
       color: '#666666',
       textAlign: 'right',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
       fontStyle: 'italic',
     },
     // Page number styles
@@ -116,7 +112,7 @@ function createStyles(pageSize: [number, number]) {
       fontSize: 9,
       color: '#666666',
       textAlign: 'left',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     pageNumberOdd: {
       position: 'absolute',
@@ -126,7 +122,7 @@ function createStyles(pageSize: [number, number]) {
       fontSize: 9,
       color: '#666666',
       textAlign: 'right',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     // Title page
     titlePage: {
@@ -141,7 +137,7 @@ function createStyles(pageSize: [number, number]) {
       textAlign: 'center',
       marginBottom: 10,
       color: '#1a1a1a',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     subtitle: {
       fontSize: 16,
@@ -149,14 +145,14 @@ function createStyles(pageSize: [number, number]) {
       marginBottom: 20,
       color: '#4a4a4a',
       fontStyle: 'italic',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     author: {
       fontSize: 12,
       textAlign: 'center',
       marginBottom: 30,
       color: '#666666',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     // Copyright page
     copyrightPage: {
@@ -170,14 +166,14 @@ function createStyles(pageSize: [number, number]) {
       fontWeight: 'bold',
       marginBottom: 10,
       color: '#1a1a1a',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     copyrightText: {
       fontSize: 9,
       textAlign: 'center',
       marginBottom: 5,
       color: '#666666',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     // TOC
     tocTitle: {
@@ -185,13 +181,13 @@ function createStyles(pageSize: [number, number]) {
       fontWeight: 'bold',
       marginBottom: 20,
       color: '#1a1a1a',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     tocItem: {
       fontSize: 11,
       marginBottom: 8,
       color: '#333333',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     // Chapter
     chapterTitle: {
@@ -201,7 +197,7 @@ function createStyles(pageSize: [number, number]) {
       paddingTop: 40,
       color: '#1a1a1a',
       textAlign: 'center',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     heading1: {
       fontSize: 16,
@@ -209,7 +205,7 @@ function createStyles(pageSize: [number, number]) {
       marginTop: 15,
       marginBottom: 10,
       color: '#2a2a2a',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     heading2: {
       fontSize: 13,
@@ -217,7 +213,7 @@ function createStyles(pageSize: [number, number]) {
       marginTop: 12,
       marginBottom: 8,
       color: '#3a3a3a',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     heading3: {
       fontSize: 11,
@@ -225,7 +221,7 @@ function createStyles(pageSize: [number, number]) {
       marginTop: 10,
       marginBottom: 6,
       color: '#4a4a4a',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     paragraph: {
       fontSize: 11,
@@ -234,7 +230,7 @@ function createStyles(pageSize: [number, number]) {
       color: '#333333',
       textAlign: 'justify',
       textIndent: 20,
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     paragraphFirst: {
       fontSize: 11,
@@ -243,21 +239,21 @@ function createStyles(pageSize: [number, number]) {
       color: '#333333',
       textAlign: 'justify',
       textIndent: 0,
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     bulletList: {
       fontSize: 11,
       marginLeft: 20,
       marginBottom: 5,
       color: '#333333',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     numberedItem: {
       fontSize: 11,
       marginLeft: 20,
       marginBottom: 5,
       color: '#333333',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
     },
     callout: {
       fontSize: 11,
@@ -278,8 +274,23 @@ function createStyles(pageSize: [number, number]) {
       textAlign: 'center',
       fontStyle: 'italic',
       color: '#888888',
-      fontFamily: 'Georgia',
+      fontFamily: 'Times-Roman',
       marginBottom: 8,
+    },
+    ebookImage: {
+      width: '100%',
+      maxHeight: 260,
+      objectFit: 'contain',
+      marginTop: 12,
+      marginBottom: 6,
+    },
+    imageCaption: {
+      fontSize: 9,
+      textAlign: 'center',
+      fontStyle: 'italic',
+      color: '#666666',
+      fontFamily: 'Times-Roman',
+      marginBottom: 12,
     },
   });
 }
@@ -350,6 +361,52 @@ function createContentElements(content: any[], styles: any): React.ReactNode[] {
   });
 
   return elements;
+}
+
+function createChapterImageElements(images: any[], styles: any): React.ReactNode[] {
+  const elements: React.ReactNode[] = [];
+
+  images
+    ?.filter((image: any) => image?.dataUri)
+    .forEach((image: any, index: number) => {
+      elements.push(
+        React.createElement(PdfImage, {
+          key: `image-${image.id || index}`,
+          src: image.dataUri,
+          style: styles.ebookImage,
+        })
+      );
+
+      if (image.caption) {
+        elements.push(
+          React.createElement(Text, {
+            key: `image-caption-${image.id || index}`,
+            style: styles.imageCaption,
+          }, image.caption)
+        );
+      }
+    });
+
+  return elements;
+}
+
+async function hydrateChaptersForPdf(chapters: any[]): Promise<any[]> {
+  return Promise.all((chapters || []).map(async (chapter: any) => {
+    const hydratedImages = await Promise.all((chapter.images || []).map(async (image: any) => {
+      try {
+        const exportImage = await resolveImageForExport(image);
+        return exportImage ? { ...image, dataUri: exportImage.dataUri } : image;
+      } catch (error) {
+        console.error('PDF image hydrate error:', error);
+        return image;
+      }
+    }));
+
+    return {
+      ...chapter,
+      images: hydratedImages,
+    };
+  }));
 }
 
 interface HeaderFooterProps {
@@ -468,6 +525,7 @@ function createEbookPDF(
   // Chapter Pages (with headers and page numbers)
   chapters.forEach((chapter: any, chapterIdx: number) => {
     currentChapterTitle = chapter.title;
+    const chapterImageElements = createChapterImageElements(chapter.images || [], styles);
     const contentElements = createContentElements(chapter.content || [], styles);
 
     // Calculate number of pages needed for this chapter (rough estimate)
@@ -503,6 +561,7 @@ function createEbookPDF(
       React.createElement(Page, { key: `chapter-${chapter.id}`, size: pageSize, style: pageStyle },
         ...headerFooterElements,
         React.createElement(Text, { style: styles.chapterTitle }, chapter.title),
+        ...chapterImageElements,
         ...contentElements
       )
     );
@@ -551,8 +610,11 @@ export async function POST(request: NextRequest) {
     // Ensure chapters is an array
     const safeChapters = Array.isArray(chapters) ? chapters : [];
 
-    // Generate PDF
-    const pdfDoc = createEbookPDF(title, subtitle || '', author || '', safeChapters, formatting || {});
+    // Resolve local base64/Supabase image files before rendering the PDF.
+    const hydratedChapters = await hydrateChaptersForPdf(safeChapters);
+
+    // Generate PDF with embedded image data URIs.
+    const pdfDoc = createEbookPDF(title, subtitle || '', author || '', hydratedChapters, formatting || {});
 
     const pdfBlob = await pdf(pdfDoc).toBlob();
     const buffer = await pdfBlob.arrayBuffer();

@@ -38,6 +38,13 @@ interface EbookImage {
   prompt: string;
   generatedUrl?: string;
   base64Data?: string;
+  storagePath?: string;
+  previewUrl?: string;
+  storageUrl?: string;
+  storageProvider?: 'local' | 'supabase';
+  mimeType?: string;
+  extension?: string;
+  storageWarning?: string;
   style: string;
   aspectRatio: string;
   caption: string;
@@ -61,6 +68,8 @@ interface Project {
   title: string;
   imageSettings: any;
   chapters: Chapter[];
+  updatedAt?: string;
+  status?: string;
 }
 
 export default function ImagesPage() {
@@ -76,16 +85,89 @@ export default function ImagesPage() {
   const [editPromptText, setEditPromptText] = useState('');
   const [viewingImage, setViewingImage] = useState<EbookImage | null>(null);
 
+  const persistProject = (nextProject: Project) => {
+    localStorage.setItem('ebookforge_project', JSON.stringify(nextProject));
+
+    void fetch('/api/projects/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nextProject),
+    }).catch((error) => {
+      console.warn('Could not sync project to Supabase:', error);
+    });
+  };
+
+  const withSaveMetadata = (nextProject: Project): Project => ({
+    ...nextProject,
+    updatedAt: new Date().toISOString(),
+    status: 'images',
+  });
+
+  const getImageSrc = (image: EbookImage): string => {
+    if (image.base64Data) {
+      return image.base64Data.startsWith('data:')
+        ? image.base64Data
+        : `data:${image.mimeType || 'image/png'};base64,${image.base64Data}`;
+    }
+
+    return image.previewUrl || image.generatedUrl || image.storageUrl || '';
+  };
+
+  const refreshStoredImageUrls = async (currentProject: Project) => {
+    const storedImages = currentProject.chapters
+      .flatMap((chapter) => chapter.images || [])
+      .filter((image) => image.storagePath);
+
+    if (storedImages.length === 0) return;
+
+    const signedUrlMap = new Map<string, string>();
+
+    await Promise.all(storedImages.map(async (image) => {
+      if (!image.storagePath) return;
+
+      try {
+        const response = await fetch('/api/images/signed-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ storagePath: image.storagePath }),
+        });
+
+        const data = await response.json();
+        if (response.ok && data.signedUrl) {
+          signedUrlMap.set(image.id, data.signedUrl);
+        }
+      } catch (error) {
+        console.warn('Could not refresh stored image preview URL:', error);
+      }
+    }));
+
+    if (signedUrlMap.size === 0) return;
+
+    const refreshedProject = {
+      ...currentProject,
+      chapters: currentProject.chapters.map((chapter) => ({
+        ...chapter,
+        images: (chapter.images || []).map((image) =>
+          signedUrlMap.has(image.id)
+            ? { ...image, previewUrl: signedUrlMap.get(image.id) }
+            : image
+        ),
+      })),
+    };
+
+    setProject(refreshedProject);
+    persistProject(refreshedProject);
+  };
+
   useEffect(() => {
-    loadProject();
+    void loadProject();
   }, []);
 
-  const loadProject = () => {
+  const loadProject = async () => {
     const stored = localStorage.getItem('ebookforge_project');
     if (stored) {
       try {
         const parsed = JSON.parse(stored);
-        setProject(parsed);
 
         // Initialize images array if not exists
         if (parsed.chapters) {
@@ -94,12 +176,31 @@ export default function ImagesPage() {
             imageSuggestions: ch.imageSuggestions || [],
             images: ch.images || [],
           }));
-          setProject({ ...parsed, chapters: chaptersWithImages });
+          const normalisedProject = { ...parsed, chapters: chaptersWithImages };
+          setProject(normalisedProject);
+          void refreshStoredImageUrls(normalisedProject);
+        } else {
+          setProject(parsed);
         }
       } catch (err) {
         setError('Failed to load project');
       }
     } else {
+      try {
+        const response = await fetch('/api/projects/latest');
+        const data = await response.json();
+
+        if (response.ok && data.project) {
+          const latestProject = data.project as Project;
+          localStorage.setItem('ebookforge_project', JSON.stringify(latestProject));
+          setProject(latestProject);
+          void refreshStoredImageUrls(latestProject);
+          return;
+        }
+      } catch (error) {
+        console.warn('Could not load latest project from Supabase:', error);
+      }
+
       router.push('/admin/upload');
     }
   };
@@ -114,7 +215,7 @@ export default function ImagesPage() {
       status: 'images',
     };
 
-    localStorage.setItem('ebookforge_project', JSON.stringify(updatedProject));
+    persistProject(updatedProject);
     setProject(updatedProject);
     setSaving(false);
   };
@@ -166,7 +267,9 @@ export default function ImagesPage() {
           : c
       );
 
-      setProject({ ...project, chapters: updatedChapters });
+      const nextProject = withSaveMetadata({ ...project, chapters: updatedChapters });
+      setProject(nextProject);
+      persistProject(nextProject);
     } catch (err: any) {
       setError(err.message);
     }
@@ -200,7 +303,9 @@ export default function ImagesPage() {
       };
     });
 
-    setProject({ ...project, chapters: updatedChapters });
+    const nextProject = withSaveMetadata({ ...project, chapters: updatedChapters });
+    setProject(nextProject);
+    persistProject(nextProject);
   };
 
   const generateImage = async (suggestion: ImageSuggestion) => {
@@ -210,12 +315,17 @@ export default function ImagesPage() {
     setGeneratingImageId(suggestion.id);
 
     try {
+      const imageId = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
       const response = await fetch('/api/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: suggestion.prompt,
           style: project.imageSettings?.style || 'soft-editorial',
+          projectId: project.id,
+          chapterId: selectedChapterId,
+          imageId,
         }),
       });
 
@@ -227,9 +337,17 @@ export default function ImagesPage() {
 
       // Create image record
       const newImage: EbookImage = {
-        id: `img_${Date.now()}`,
+        id: data.image.id || imageId,
         prompt: suggestion.prompt,
         base64Data: data.image.base64Data,
+        generatedUrl: data.image.generatedUrl,
+        previewUrl: data.image.previewUrl,
+        storageUrl: data.image.storageUrl,
+        storagePath: data.image.storagePath,
+        storageProvider: data.image.storageProvider || 'local',
+        mimeType: data.image.mimeType || 'image/png',
+        extension: data.image.extension || 'png',
+        storageWarning: data.image.storageWarning,
         style: project.imageSettings?.style || 'soft-editorial',
         aspectRatio: project.imageSettings?.aspectRatio || '16:9',
         caption: suggestion.caption,
@@ -237,7 +355,7 @@ export default function ImagesPage() {
         placement: suggestion.placement,
         chapterId: selectedChapterId,
         isCover: false,
-        generatedAt: new Date().toISOString(),
+        generatedAt: data.image.generatedAt || new Date().toISOString(),
       };
 
       // Update chapter
@@ -253,7 +371,9 @@ export default function ImagesPage() {
         };
       });
 
-      setProject({ ...project, chapters: updatedChapters });
+      const nextProject = withSaveMetadata({ ...project, chapters: updatedChapters });
+      setProject(nextProject);
+      persistProject(nextProject);
     } catch (err: any) {
       setError(err.message);
     }
@@ -276,6 +396,9 @@ export default function ImagesPage() {
   const deleteImage = (imageId: string) => {
     if (!project || !selectedChapterId) return;
 
+    const currentChapter = project.chapters.find((c) => c.id === selectedChapterId);
+    const imageToDelete = currentChapter?.images?.find((img) => img.id === imageId);
+
     const updatedChapters = project.chapters.map((c: Chapter) => {
       if (c.id !== selectedChapterId) return c;
 
@@ -285,7 +408,19 @@ export default function ImagesPage() {
       };
     });
 
-    setProject({ ...project, chapters: updatedChapters });
+    const nextProject = withSaveMetadata({ ...project, chapters: updatedChapters });
+    setProject(nextProject);
+    persistProject(nextProject);
+
+    if (imageToDelete?.storagePath) {
+      void fetch('/api/images/delete', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storagePath: imageToDelete.storagePath }),
+      }).catch((error) => {
+        console.warn('Could not delete stored image from Supabase:', error);
+      });
+    }
   };
 
   const startEditPrompt = (suggestion: ImageSuggestion) => {
@@ -307,7 +442,9 @@ export default function ImagesPage() {
       };
     });
 
-    setProject({ ...project, chapters: updatedChapters });
+    const nextProject = withSaveMetadata({ ...project, chapters: updatedChapters });
+    setProject(nextProject);
+    persistProject(nextProject);
     setEditingPromptId(null);
     setEditPromptText('');
   };
@@ -530,9 +667,9 @@ export default function ImagesPage() {
                           key={image.id}
                           className="relative group rounded-lg overflow-hidden border border-zinc-700"
                         >
-                          {image.base64Data ? (
+                          {getImageSrc(image) ? (
                             <img
-                              src={`data:image/png;base64,${image.base64Data}`}
+                              src={getImageSrc(image)}
                               alt={image.altText}
                               className="w-full aspect-square object-cover"
                             />
@@ -559,6 +696,9 @@ export default function ImagesPage() {
 
                           <div className="p-3 bg-zinc-800">
                             <p className="text-zinc-300 text-sm truncate">{image.caption}</p>
+                            <p className="text-zinc-500 text-xs mt-1">
+                              {image.storagePath ? 'Saved to Supabase Storage' : 'Saved in browser storage'}
+                            </p>
                           </div>
                         </div>
                       ))}
@@ -619,9 +759,9 @@ export default function ImagesPage() {
           onClick={() => setViewingImage(null)}
         >
           <div className="relative max-w-4xl max-h-full" onClick={(e) => e.stopPropagation()}>
-            {viewingImage.base64Data && (
+            {getImageSrc(viewingImage) && (
               <img
-                src={`data:image/png;base64,${viewingImage.base64Data}`}
+                src={getImageSrc(viewingImage)}
                 alt={viewingImage.altText}
                 className="max-w-full max-h-[80vh] object-contain rounded-lg"
               />

@@ -35,6 +35,13 @@ OPENAI_IMAGE_QUALITY=auto
 # Admin authentication (required)
 ADMIN_PASSWORD=your_secure_password_here
 SESSION_SECRET=random_32_character_string_minimum
+
+# Supabase backend/storage (recommended for persistent generated images)
+# Use the same Supabase project you control. Keep the service role key server-side only.
+SUPABASE_URL=https://your-project-ref.supabase.co
+NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+SUPABASE_STORAGE_BUCKET=ebookforge-images
 ```
 
 - `ADMIN_PASSWORD`: The password required to access the admin panel
@@ -42,6 +49,26 @@ SESSION_SECRET=random_32_character_string_minimum
 - `OPENAI_API_KEY`: Your OpenAI API key with GPT-4o and OpenAI Image API access
 - `OPENAI_IMAGE_MODEL` optional: defaults to `gpt-image-1`; you may set `dall-e-3` or `dall-e-2` if needed
 - `OPENAI_IMAGE_QUALITY` optional: for GPT image models, use `low`, `medium`, `high`, or `auto`
+- `SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_URL`: your Supabase project URL
+- `SUPABASE_SERVICE_ROLE_KEY`: server-only key used by API routes to save/load project JSON and image files
+- `SUPABASE_STORAGE_BUCKET`: optional bucket name, defaults to `ebookforge-images`
+
+---
+
+## Supabase Backend Setup
+
+Run this SQL once in Supabase SQL Editor:
+
+```sql
+-- See supabase/ebookforge_backend_setup.sql in this repo for the full setup script.
+```
+
+That script creates:
+
+- `public.ebook_projects` for project JSON autosave.
+- A private `ebookforge-images` Storage bucket for generated PNG/JPEG/WebP files.
+
+The app uses server-side Next.js API routes with `SUPABASE_SERVICE_ROLE_KEY`, so the service role key is never exposed in the browser. If Supabase variables are missing, the app falls back to the previous browser/localStorage behaviour, but generated images may still hit browser storage limits.
 
 ---
 
@@ -121,9 +148,15 @@ The analyzed document is stored in browser localStorage for the entire session.
    - Defaults to `gpt-image-1`, 1024x1024 pixels, PNG output
    - `response_format` is only sent for `dall-e-2`/`dall-e-3`; GPT image models always return base64 data
 
-4. **Gallery Management**: View all generated images, regenerate specific ones
+4. **Persistent Storage**:
+   - If Supabase is configured, generated image bytes are uploaded to the private `ebookforge-images` bucket.
+   - The project stores the stable `storagePath`, not a huge base64 string.
+   - The editor refreshes signed preview URLs after page reloads.
+   - Project JSON is autosynced to the `ebook_projects` table.
 
-5. **Export Integration**: Images included in all export formats
+5. **Gallery Management**: View all generated images, regenerate specific ones, and delete stored images
+
+6. **Export Integration**: DOCX/PDF/EPUB/image ZIP exports fetch the real image file from Supabase Storage and embed/package the image bytes into the final files
 
 ---
 
@@ -135,7 +168,7 @@ The analyzed document is stored in browser localStorage for the entire session.
   - Copyright page
   - Table of contents
   - Chapters with headings, paragraphs, lists
-  - Image placeholders with captions
+  - Embedded generated images with captions
 - Built with `docx` npm package
 - Compatible with Microsoft Word, Google Docs, LibreOffice
 
@@ -163,7 +196,7 @@ The analyzed document is stored in browser localStorage for the entire session.
 - Subsequent paragraphs: 1.5em indent
 - Line height: 1.7 for readability
 
-Built with `@react-pdf/renderer`.
+Generated images are resolved from local base64 or Supabase Storage before rendering, then embedded as image data inside the final PDF. Built with `@react-pdf/renderer`.
 
 ### EPUB 3.0 Export (Kindle Direct Publishing Ready)
 Outputs a **true `.epub` file** - no conversion required.
@@ -185,7 +218,7 @@ mimetype (uncompressed, first file)
     chapter_02.xhtml
     ...
   images/
-    image_001.jpg
+    image_001.png
     ...
 ```
 
@@ -215,7 +248,7 @@ p + p {
 - Preview with Kindle Previewer (optional)
 
 ### Images ZIP
-All generated images bundled as separate JPG files for external use.
+All generated images are bundled as separate PNG/JPG/WebP files for external use. Images can come from local base64 fallback data or Supabase Storage.
 
 ### Project JSON
 Full project state saved for resuming work later. Contains all chapters, settings, and images as base64.

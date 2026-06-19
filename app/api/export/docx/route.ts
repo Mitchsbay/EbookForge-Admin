@@ -12,6 +12,9 @@ import {
   ImageRun,
 } from 'docx';
 import { z } from 'zod';
+import { resolveImageForExport } from '@/lib/supabase-storage';
+
+export const runtime = 'nodejs';
 
 const exportRequestSchema = z.object({
   title: z.string(),
@@ -35,6 +38,69 @@ const exportRequestSchema = z.object({
     fontStyle: z.string(),
   }).optional(),
 });
+
+async function addImageToDocxSections(sections: Paragraph[], image: any, fallbackCaption = 'Image') {
+  try {
+    const exportImage = await resolveImageForExport(image);
+
+    if (!exportImage) {
+      sections.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [
+          new TextRun({
+            text: `[Image unavailable: ${image?.caption || fallbackCaption}]`,
+            size: 20,
+            italics: true,
+          }),
+        ],
+        spacing: { before: 300, after: 100 },
+      }));
+      return;
+    }
+
+    sections.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [
+        new ImageRun({
+          data: exportImage.buffer,
+          transformation: {
+            width: 430,
+            height: 285,
+          },
+          type: exportImage.extension === 'jpg' ? 'jpg' : exportImage.extension,
+        } as any),
+      ],
+      spacing: { before: 300, after: image?.caption ? 100 : 300 },
+    }));
+
+    if (image?.caption) {
+      sections.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [
+          new TextRun({
+            text: image.caption,
+            size: 20,
+            italics: true,
+          }),
+        ],
+        spacing: { after: 300 },
+      }));
+    }
+  } catch (error) {
+    console.error('DOCX image embed error:', error);
+    sections.push(new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [
+        new TextRun({
+          text: `[Image could not be embedded: ${image?.caption || fallbackCaption}]`,
+          size: 20,
+          italics: true,
+        }),
+      ],
+      spacing: { before: 300, after: 300 },
+    }));
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -218,6 +284,13 @@ export async function POST(request: NextRequest) {
         }));
       }
 
+      // Generated chapter images are embedded as real image files, not remote URLs.
+      if (Array.isArray(chapter.images) && chapter.images.length > 0) {
+        for (const image of chapter.images) {
+          await addImageToDocxSections(sections, image);
+        }
+      }
+
       // Chapter content
       for (const block of chapter.content) {
         switch (block.type) {
@@ -305,33 +378,41 @@ export async function POST(request: NextRequest) {
             }));
             break;
 
-          case 'image':
-            // Image placeholder
-            sections.push(new Paragraph({
-              alignment: AlignmentType.CENTER,
-              children: [
-                new TextRun({
-                  text: `[Image: ${block.content || block.caption || 'Image'}]`,
-                  size: 20,
-                  italics: true,
-                }),
-              ],
-              spacing: { before: 300, after: 100 },
-            }));
-            if (block.caption) {
+          case 'image': {
+            const matchingImage = chapter.images?.find((image: any) =>
+              image.id === block.imageId || image.imageId === block.imageId || image.id === block.id
+            );
+
+            if (matchingImage) {
+              await addImageToDocxSections(sections, { ...matchingImage, caption: block.caption || matchingImage.caption });
+            } else {
               sections.push(new Paragraph({
                 alignment: AlignmentType.CENTER,
                 children: [
                   new TextRun({
-                    text: block.caption,
+                    text: `[Image: ${block.content || block.caption || 'Image'}]`,
                     size: 20,
                     italics: true,
                   }),
                 ],
-                spacing: { after: 300 },
+                spacing: { before: 300, after: 100 },
               }));
+              if (block.caption) {
+                sections.push(new Paragraph({
+                  alignment: AlignmentType.CENTER,
+                  children: [
+                    new TextRun({
+                      text: block.caption,
+                      size: 20,
+                      italics: true,
+                    }),
+                  ],
+                  spacing: { after: 300 },
+                }));
+              }
             }
             break;
+          }
         }
       }
 
